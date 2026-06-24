@@ -19,13 +19,17 @@ python scripts/run_benchmark.py --model dummy --n-samples 20
 python scripts/run_benchmark.py --model openvla --n-samples 50 \
     --device cuda --output results/openvla_run1
 
-# 5. Run tests
+# 5. Run with a simulator (real task success measurement)
+python scripts/run_benchmark.py --model dummy --n-samples 20 \
+    --simulator mock --n-sim-episodes 10
+
+# 6. Run tests
 pytest tests/
 
-# 6. Type check
+# 7. Type check
 mypy wam_art/
 
-# 7. Lint
+# 8. Lint
 ruff check wam_art/ scripts/ tests/
 ```
 
@@ -53,7 +57,7 @@ wam-art/
 │   ├── smoke_test.py            # Phase 1/2 pipeline sanity check
 │   ├── smoke_test_openvla.py    # Minimal OpenVLA latent demo
 │   └── run_benchmark.py         # CLI benchmark runner
-├── tests/             # pytest suite (53 tests)
+├── tests/             # pytest suite (61 tests)
 ├── notebooks/         # Exploratory analysis
 └── data/              # Gitignored; structured by run_id
 ```
@@ -83,6 +87,27 @@ All adapters expose the same three methods:
     latent = adapter.extract_latent(img)   # → Tensor  (d,)
     action, _ = adapter.predict_action(img, state)
     adapter.reset()
+
+### Simulators
+
+``wam_art.eval.simulator`` provides a pluggable interface for real
+robot benchmark environments:
+
+- ``MockSimulator`` — deterministic, no rendering.  Heavily corrupted
+  observations have lower baseline success.  Perfect for CI and fast
+  iteration.
+- ``LiberoSimulator`` — wraps the LIBERO MuJoCo manipulation benchmark.
+  Requires an off-screen renderer (EGL, OSMesa, or Xvfb+GLFW).  Falls
+  back to ``MockSimulator`` automatically when rendering is unavailable.
+
+Usage::
+
+    from wam_art.eval.simulator import LiberoSimulator, MockSimulator
+
+    sim = LiberoSimulator("libero_spatial")
+    print(sim.list_tasks())
+    result = sim.run_episode(adapter, task_id=0, max_steps=100)
+    print(result.success, result.steps)
 
 **Roadmap**
 
