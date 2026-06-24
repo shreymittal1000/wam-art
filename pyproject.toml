@@ -53,6 +53,9 @@ openvla = [
     "tokenizers==0.19.1",
     "timm==0.9.16",
 ]
+viz = [
+    "matplotlib>=3.7.0",
+]
 fastwam = [
     # FastWAM must be installed from source:
     #   git clone https://github.com/yuantianyuan01/FastWAM.git

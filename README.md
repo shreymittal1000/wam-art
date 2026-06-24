@@ -12,13 +12,20 @@ uv pip install -e ".[dev]"
 # 2. Run smoke test (no real model weights needed)
 python scripts/smoke_test.py
 
-# 3. Run tests
+# 3. Run full benchmark (dummy WAM, fast)
+python scripts/run_benchmark.py --model dummy --n-samples 20
+
+# 4. Run with real OpenVLA weights (slow on CPU, fast on GPU)
+python scripts/run_benchmark.py --model openvla --n-samples 50 \
+    --device cuda --output results/openvla_run1
+
+# 5. Run tests
 pytest tests/
 
-# 4. Type check
+# 6. Type check
 mypy wam_art/
 
-# 5. Lint
+# 7. Lint
 ruff check wam_art/ scripts/ tests/
 ```
 
@@ -27,15 +34,26 @@ ruff check wam_art/ scripts/ tests/
 ```
 wam-art/
 ├── wam_art/
-│   ├── models/        # WAM adapters (dummy, fastwam, dreamzero, ...)
+│   ├── models/        # WAM adapters (dummy, openvla, fastwam)
+│   │   ├── base.py    # BaseWAMAdapter abstract interface
+│   │   ├── dummy.py   # DummyWAMAdapter (random projection)
+│   │   ├── openvla.py # OpenVLAAdapter (HF transformers, 7B)
+│   │   └── fastwam.py # FastWAMAdapter (lazy-import scaffold)
 │   ├── editing/       # Image perturbation + VLM critic
+│   │   ├── corruptions.py   # 10 OpenCV/Pillow transforms
+│   │   └── critic.py        # BaseCritic, DummyCritic, HeuristicCritic
 │   ├── latents/       # Latent extraction, distance metrics
 │   ├── anomaly/       # Conformal prediction, thresholding
-│   ├── eval/          # Metrics, sim harness, plotting
+│   ├── eval/          # Metrics, benchmark harness, plotting
+│   │   ├── harness.py       # BenchmarkHarness (end-to-end loop)
+│   │   └── viz.py           # matplotlib plotting helpers
 │   └── config/        # Config loading + schema
 ├── configs/           # Experiment configs (YAML)
 ├── scripts/           # Entry points
-├── tests/             # pytest suite
+│   ├── smoke_test.py            # Phase 1/2 pipeline sanity check
+│   ├── smoke_test_openvla.py    # Minimal OpenVLA latent demo
+│   └── run_benchmark.py         # CLI benchmark runner
+├── tests/             # pytest suite (53 tests)
 ├── notebooks/         # Exploratory analysis
 └── data/              # Gitignored; structured by run_id
 ```
@@ -69,7 +87,7 @@ All adapters expose the same three methods:
 **Roadmap**
 
 - [x] Phase 1: Smoke test & WAM adapter scaffold
-- [x] Phase 2: Core method (Approach A) with real editing
+- [x] Phase 2: Core method (Approach A) with real editing + benchmark harness
 - [ ] Phase 3: Approach B — temporal latent dynamics
 - [ ] Phase 4: Targeted data collection & fine-tuning (Q2)
 - [ ] Phase 5: Full evaluation suite + ablations (Q3)
