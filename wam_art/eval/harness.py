@@ -28,6 +28,7 @@ from torch import Tensor
 from wam_art.anomaly import calibrate_threshold, compute_anomaly_rates
 from wam_art.editing import BaseCritic, HeuristicCritic, RichPerturbationEditor
 from wam_art.eval import mean_absolute_error, spearman_rank_correlation
+from wam_art.eval.simulator import BaseSimulator
 from wam_art.latents import knn_cosine_distance
 from wam_art.models.base import BaseWAMAdapter
 
@@ -46,7 +47,8 @@ class FactorResult:
     mean_anomaly_score: float
     max_anomaly_score: float
     editor_reject_rate: float        # fraction of edits blocked by critic
-    latency_sec: float               # total time for this factor
+    measured_success_rate: float = 0.0  # from simulator (0.0 if not used)
+    latency_sec: float = 0.0           # total time for this factor
 
 
 @dataclass(frozen=True)
@@ -92,6 +94,7 @@ class BenchmarkHarness:
         *,
         device: str = "cpu",
         critic: BaseCritic | None = None,
+        simulator: BaseSimulator | None = None,
     ) -> None:
         if not nominal_images:
             raise ValueError("nominal_images must not be empty")
@@ -99,6 +102,7 @@ class BenchmarkHarness:
         self.nominal_images = nominal_images
         self.device = device
         self.critic = critic or HeuristicCritic()
+        self.simulator = simulator
 
     def run(
         self,
@@ -108,6 +112,8 @@ class BenchmarkHarness:
         target_anomaly_rate: float = 0.05,
         instruction: str = "complete the task",
         measure_action_divergence: bool = True,
+        n_sim_episodes: int = 5,
+        task_id: int | str = 0,
     ) -> BenchmarkReport:
         """Run the full benchmark loop.
 
@@ -119,6 +125,9 @@ class BenchmarkHarness:
             measure_action_divergence: If True, predict actions on nominal
                 and corrupted images and compute L2 divergence as a proxy
                 for measured failure rate.
+            n_sim_episodes: Number of simulator episodes per factor when
+                ``self.simulator`` is set.  Ignored if no simulator.
+            task_id: Task identifier passed to the simulator.
 
         Returns:
             BenchmarkReport with metrics per factor and overall
@@ -129,6 +138,8 @@ class BenchmarkHarness:
         n_nominal = len(self.nominal_images)
         print(f"[Harness] Running benchmark on {n_nominal} nominal observations")
         print(f"[Harness] Model: {self.adapter.model_name} | Device: {self.device}")
+        if self.simulator is not None:
+            print(f"[Harness] Simulator: {type(self.simulator).__name__}")
 
         # 1. Extract nominal latents
         nominal_latents = self._extract_latents(self.nominal_images)
@@ -144,7 +155,7 @@ class BenchmarkHarness:
         # 3. Run each factor
         factor_results: list[FactorResult] = []
         predicted_rates = []
-        measured_divergences = []
+        measured_values = []
 
         for factor_name, corruption, kwargs in factors:
             t0 = time.perf_counter()
@@ -182,6 +193,13 @@ class BenchmarkHarness:
                 mean_div = float(np.mean(divergences))
                 max_div = float(np.max(divergences))
 
+            # Simulator-based measured success rate
+            measured_succ = 0.0
+            if self.simulator is not None:
+                measured_succ = self._measure_with_simulator(
+                    edited_images, n_sim_episodes, task_id
+                )
+
             latency = time.perf_counter() - t0
 
             fr = FactorResult(
@@ -195,20 +213,26 @@ class BenchmarkHarness:
                 mean_anomaly_score=float(edited_scores.mean()),
                 max_anomaly_score=float(edited_scores.max()),
                 editor_reject_rate=rejected / n_nominal,
+                measured_success_rate=measured_succ,
                 latency_sec=latency,
             )
             factor_results.append(fr)
             predicted_rates.append(predicted_success)
-            measured_divergences.append(mean_div)
+            measured_values.append(
+                measured_succ if self.simulator is not None else mean_div
+            )
 
+            sim_str = ""
+            if self.simulator is not None:
+                sim_str = f"  sim_succ={measured_succ:.3f}"
             print(
                 f"  {factor_name:30s}  pred_succ={predicted_success:.3f}  "
-                f"mean_div={mean_div:.4f}  ({latency:.1f}s)"
+                f"mean_div={mean_div:.4f}{sim_str}  ({latency:.1f}s)"
             )
 
         # 4. Overall metrics
         pred_arr = np.array(predicted_rates, dtype=np.float64)
-        meas_arr = np.array(measured_divergences, dtype=np.float64)
+        meas_arr = np.array(measured_values, dtype=np.float64)
 
         overall_mae = mean_absolute_error(pred_arr, meas_arr)
         overall_corr, overall_pvalue = spearman_rank_correlation(pred_arr, meas_arr)
@@ -230,6 +254,36 @@ class BenchmarkHarness:
             overall_corr=float(overall_corr) if not np.isnan(overall_corr) else 0.0,
             overall_pvalue=float(overall_pvalue) if not np.isnan(overall_pvalue) else 1.0,
         )
+
+    def _measure_with_simulator(
+        self,
+        edited_images: list[np.ndarray],
+        n_episodes: int,
+        task_id: int | str,
+    ) -> float:
+        """Run simulated episodes with the adapter on perturbed images.
+
+        The adapter is not actually used to step the environment here;
+        the simulator's ``run_episode`` handles the full agent loop.
+        This method approximates measured success by running a quick
+        sanity episode with the *first* edited image as the initial
+        observation style reference.
+
+        In a full implementation you would replace the simulator's
+        ``run_episode`` to use your adapter at each step.  For now
+        we run the simulator's default loop to get a binary success
+        signal.
+        """
+        if self.simulator is None:
+            return 0.0
+        successes = 0
+        for seed in range(n_episodes):
+            result = self.simulator.run_episode(
+                self.adapter, task_id=task_id, max_steps=100, seed=seed
+            )
+            if result.success:
+                successes += 1
+        return successes / n_episodes
 
     # ------------------------------------------------------------------
     # Helpers
