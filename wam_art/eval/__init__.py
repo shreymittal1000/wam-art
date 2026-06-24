@@ -61,7 +61,7 @@ def print_metric_report(
     print("=" * 50)
     print(f"{'Factor':<25} {'Pred':>8} {'Meas':>8} {'Err':>8}")
     print("-" * 50)
-    for name, pred, meas in zip(factor_names, predicted, measured):
+    for name, pred, meas in zip(factor_names, predicted, measured, strict=True):
         print(f"{name:<25} {pred:>8.4f} {meas:>8.4f} {abs(pred - meas):>8.4f}")
     print("-" * 50)
     print(f"Spearman correlation:  {corr:.4f} (p={p:.4f})")

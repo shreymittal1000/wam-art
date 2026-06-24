@@ -40,10 +40,36 @@ wam-art/
 └── data/              # Gitignored; structured by run_id
 ```
 
-## Roadmap
+Built-in adapters
+-----------------
 
-- [ ] Phase 1: Smoke test & WAM adapter for FastWAM
-- [ ] Phase 2: Core method (Approach A) with real editing
+``wam_art.models`` ships with a thin inheritance hierarchy so swapping
+models is one line:
+
+- ``DummyWAMAdapter`` — fixed random projection, zero actions.  Used for
+  smoke-testing the pipeline without downloading weights.
+- ``OpenVLAAdapter`` — wraps `OpenVLA <https://huggingface.co/openvla/openvla-7b>`_
+  via ``transformers.AutoModelForVision2Seq``.  Vision latent is extracted
+  from the DINOv2/SigLIP backbone (mean-pooled patch features, L2-normalised).
+  Install: ``pip install -e ".[openvla]"``.
+- ``FastWAMAdapter`` — scaffold for `FastWAM <https://github.com/yuantianyuan01/FastWAM>`_
+  (arXiv:2603.16666).  Latent uses the Wan2.2 VAE encoder.  Requires cloning
+  the FastWAM repo and adding it to ``PYTHONPATH`` (see
+  ``wam_art/models/fastwam.py`` docstring for full setup).
+
+All adapters expose the same three methods:
+
+.. code-block:: python
+
+    adapter.load(checkpoint_path)          # or model_name for HF Hub
+    latent = adapter.extract_latent(img)   # → Tensor  (d,)
+    action, _ = adapter.predict_action(img, state)
+    adapter.reset()
+
+**Roadmap**
+
+- [x] Phase 1: Smoke test & WAM adapter scaffold
+- [x] Phase 2: Core method (Approach A) with real editing
 - [ ] Phase 3: Approach B — temporal latent dynamics
 - [ ] Phase 4: Targeted data collection & fine-tuning (Q2)
 - [ ] Phase 5: Full evaluation suite + ablations (Q3)

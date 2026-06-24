@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from wam_art.models import BaseWAMAdapter
+from wam_art.models.base import BaseWAMAdapter
 
 
 class DummyWAMAdapter(BaseWAMAdapter):

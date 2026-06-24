@@ -48,6 +48,16 @@ dev = [
     "types-pyyaml",
     "pre-commit>=3.5.0",
 ]
+openvla = [
+    "transformers==4.40.1",
+    "tokenizers==0.19.1",
+    "timm==0.9.16",
+]
+fastwam = [
+    # FastWAM must be installed from source:
+    #   git clone https://github.com/yuantianyuan01/FastWAM.git
+    #   pip install -e ./FastWAM
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
