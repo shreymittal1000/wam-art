@@ -31,12 +31,11 @@ def test_openvla_adapter_is_wam_adapter() -> None:
 
 
 @pytest.mark.skipif(not _OPENVLA_AVAILABLE, reason="openvla deps not installed")
-def test_openvla_adapter_load_without_checkpoint_raises() -> None:
+def test_openvla_adapter_load_with_bad_checkpoint_raises() -> None:
     adapter = OpenVLAAdapter(device="cpu")
-    # Loading without a valid checkpoint path should raise because HF Hub
-    # access is unavailable in most CI environments.
+    # A path that definitely does not exist should raise
     with pytest.raises((OSError, ValueError, RuntimeError)):
-        adapter.load()
+        adapter.load(checkpoint_path="/totally/bogus/checkpoint/path")
 
 
 @pytest.mark.skipif(not _OPENVLA_AVAILABLE, reason="openvla deps not installed")

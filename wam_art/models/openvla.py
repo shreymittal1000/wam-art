@@ -22,7 +22,6 @@ References:
 
 from __future__ import annotations
 
-import warnings
 from typing import Any
 
 import numpy as np
@@ -103,22 +102,13 @@ class OpenVLAAdapter(BaseWAMAdapter):
         self._vla.to(self.device)
 
         # Cache references to internal helpers used for latent extraction.
-        # The vision backbone is needed for `extract_latent`.
-        if hasattr(self._vla, "vision_backbone"):
-            self._image_transform = self._vla.vision_backbone.image_transform
-        elif hasattr(self._vla, "model") and hasattr(self._vla.model, "vision_backbone"):
-            self._image_transform = self._vla.model.vision_backbone.image_transform
-        else:
-            warnings.warn(
-                "Could not locate vision_backbone on the loaded model; "
-                "`extract_latent` will fall back to processor embeddings.",
-                stacklevel=2,
-            )
+        # Note: HF PrismaticVisionBackbone does not expose image_transform.
+        # We use the processor for preprocessing instead.
+        self._image_transform = None
 
         if hasattr(self._vla, "llm_backbone"):
             self._tokenizer = self._vla.llm_backbone.tokenizer
         elif hasattr(self._vla, "model") and hasattr(self._vla.model, "get_input_embeddings"):
-            # HF wrapper path
             self._tokenizer = self._processor.tokenizer
         else:
             self._tokenizer = self._processor.tokenizer
@@ -229,18 +219,20 @@ class OpenVLAAdapter(BaseWAMAdapter):
         return Image.fromarray(observation).convert("RGB")
 
     def _preprocess_image(self, img: Image.Image) -> Tensor:
-        """Run the model-specific image transform if available."""
+        """Run the model-specific image transform via the processor."""
         if self._image_transform is not None:
             pixel_values = self._image_transform(img)
             if isinstance(pixel_values, dict):
-                # Prismatic fused-backbone: stacked channels
                 pixel_values = pixel_values["pixel_values"]
             if pixel_values.ndim == 3:
                 pixel_values = pixel_values[None, ...]
             return pixel_values.to(self.device, dtype=torch.bfloat16)
 
-        # Fallback via processor
-        inputs = self._processor(images=img, return_tensors="pt")
+        # Fallback via HF processor (works for OpenVLA-7b loaded via
+        # AutoModelForVision2Seq + trust_remote_code).
+        # PrismaticProcessor requires a text argument even for image-only
+        # preprocessing, so we pass a dummy string.
+        inputs = self._processor("dummy", images=img, return_tensors="pt")
         pv = inputs["pixel_values"]
         if pv.ndim == 3:
             pv = pv[None, ...]
