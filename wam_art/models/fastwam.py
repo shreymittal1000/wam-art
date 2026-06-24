@@ -4,36 +4,47 @@ FastWAM (arXiv:2603.16666) is a world action model based on the Wan2.2
 video diffusion backbone.  It jointly predicts future video frames and
 robot actions, evaluated on LIBERO and RoboTwin benchmarks.
 
-**Installation prerequisites:**
+**Installation prerequisites**
+
+1. Clone the official repository alongside WAM-ART and install it:
 
 .. code-block:: bash
 
-    # 1. Clone the official repository alongside WAM-ART
     git clone https://github.com/yuantianyuan01/FastWAM.git
     cd FastWAM
     pip install -e .
 
-    # 2. Download checkpoints from HuggingFace
+2. Pre-process the ActionDiT backbone **once** (requires GPU):
+
+.. code-block:: bash
+
+    mkdir -p checkpoints
+    export DIFFSYNTH_MODEL_BASE_PATH="$(pwd)/checkpoints"
+    python scripts/preprocess_action_dit_backbone.py \
+        --model-config configs/model/fastwam.yaml \
+        --output checkpoints/ActionDiT_linear_interp_Wan22_alphascale_1024hdim.pt \
+        --device cuda --dtype bfloat16
+
+3. Download a released checkpoint from HuggingFace, e.g.:
+
+.. code-block:: bash
+
     huggingface-cli download yuanty/fastwam \
         libero_uncond_2cam224.pt \
         libero_uncond_2cam224_dataset_stats.json \
         --local-dir ./checkpoints/fastwam_release
 
-    # 3. (Optional) Pre-process the ActionDiT backbone
-    python scripts/preprocess_action_dit_backbone.py \
-        --model-config configs/model/fastwam.yaml \
-        --output checkpoints/ActionDiT.pt --device cuda --dtype bfloat16
+**Environment**
+FastWAM expects its repo root on ``PYTHONPATH``.  The adapter does a
+lazy import of ``fastwam`` — if it is missing, every method raises a
+clear ``RuntimeError`` explaining how to set it up.
 
-**Environment:**
-FastWAM expects its repo root in ``PYTHONPATH``.  When this adapter is
-instantiated, it attempts an *optional* import from ``fastwam`` — if the
-module is missing, every method raises ``RuntimeError`` with a setup
-reminder.
-
-**Latent extraction strategy:**
-Currently returns **VAE-encoded latent** of the input image.  A future
-upgrade can extract the DiT hidden state after a conditioning forward
-pass ( richer semantically but more expensive).
+**Latent extraction strategy**
+We encode the input image through the Wan2.2 VAE and flatten the
+resulting spatial latent.  This is the cheapest policy-specific
+representation available without running the full diffusion forward
+pass.  A future upgrade could extract the video-expert *pre-DiT* tokens
+(even richer semantically) at the cost of an additional transformer pass.
 
 References:
     - https://github.com/yuantianyuan01/FastWAM
@@ -60,7 +71,7 @@ _FASTWAM_AVAILABLE = False
 _fastwam_exc: Exception | None = None
 
 try:
-    import fastwam.runtime as fw_runtime
+    from fastwam.models.wan22.fastwam import FastWAM
     from omegaconf import OmegaConf
 
     _FASTWAM_AVAILABLE = True
@@ -74,12 +85,20 @@ class FastWAMAdapter(BaseWAMAdapter):
     Args:
         model_name: Arbitrary identifier (e.g. ``fastwam-libero``).
         device: Torch device.
-        checkpoint_path: Path to a ``.pt`` checkpoint (e.g.
-            ``checkpoints/fastwam_release/libero_uncond_2cam224.pt``).
-        task_config_path: Path to the Hydra task YAML config that
-            matches the checkpoint (e.g.
-            ``configs/task/libero_uncond_2cam224_1e-4.yaml``).
-        default_prompt: Instruction text used when no prompt is supplied.
+        checkpoint_path: Path to a **fine-tuned** ``.pt`` checkpoint
+            (e.g. ``checkpoints/fastwam_release/libero_uncond_2cam224.pt``).
+        cfg_path: Path to the Hydra model YAML config (default:
+            ``FastWAM/configs/model/fastwam.yaml``).
+        dataset_stats_path: Optional path to a ``dataset_stats.json``
+            produced during FastWAM training.  When provided, the
+            adapter applies the same mean/std normalisation the model
+            saw during training.
+        action_horizon: Number of future action steps the model should
+            predict at inference time (default: 16).
+        num_inference_steps: Diffusion denoising steps for action
+            generation (default: 20; lower = faster, higher = better).
+        default_prompt: Instruction text used when none is supplied via
+            ``state`` in :meth:`predict_action`.
     """
 
     def __init__(
@@ -87,121 +106,190 @@ class FastWAMAdapter(BaseWAMAdapter):
         model_name: str = "fastwam",
         device: str = "cpu",
         checkpoint_path: str | None = None,
-        task_config_path: str | None = None,
+        cfg_path: str | None = None,
+        dataset_stats_path: str | None = None,
+        action_horizon: int = 16,
+        num_inference_steps: int = 20,
         default_prompt: str = "pick up the object",
     ) -> None:
         super().__init__(model_name=model_name, device=device)
         self.checkpoint_path = checkpoint_path
-        self.task_config_path = task_config_path
+        self.cfg_path = cfg_path
+        self.dataset_stats_path = dataset_stats_path
+        self.action_horizon = action_horizon
+        self.num_inference_steps = num_inference_steps
         self.default_prompt = default_prompt
 
-        self._model: Any | None = None
+        self._model: FastWAM | None = None
         self._cfg: Any | None = None
-        self._vae: Any | None = None
+        self._norm_mean: Tensor | None = None
+        self._norm_std: Tensor | None = None
 
-    # -------------------------------------------------------------------
-    # Loading
-    # -------------------------------------------------------------------
-    def load(self, checkpoint_path: str | None = None) -> None:
-        """Instantiate FastWAM and load weights.
-
-        Args:
-            checkpoint_path: Overrides the path given at construction.
-        """
+    # ------------------------------------------------------------------
+    # Setup helpers
+    # ------------------------------------------------------------------
+    def _assert_available(self) -> None:
         if not _FASTWAM_AVAILABLE:
             raise RuntimeError(
                 "FastWAM is not importable.  Follow the setup steps in "
                 "wam_art/models/fastwam.py docstring, then restart Python."
             ) from _fastwam_exc
 
+    @staticmethod
+    def _resolve_cfg_path(cfg_path: str | None) -> str:
+        """Return an absolute path to a FastWAM Hydra config file."""
+        if cfg_path is not None:
+            p = Path(cfg_path)
+            if p.exists():
+                return str(p.resolve())
+            raise FileNotFoundError(f"Config not found: {cfg_path}")
+
+        # Heuristic: walk up from the FastWAM package to repo root
+        try:
+            import fastwam
+
+            repo_root = Path(fastwam.__file__).resolve().parent.parent.parent
+        except Exception:
+            repo_root = Path(".")
+        candidate = repo_root / "configs" / "model" / "fastwam.yaml"
+        if candidate.exists():
+            return str(candidate.resolve())
+        raise FileNotFoundError(
+            "cfg_path not provided and auto-detection failed. "
+            "Please pass cfg_path=/absolute/path/to/fastwam.yaml"
+        )
+
+    def _load_dataset_stats(self) -> None:
+        """Optional: load image mean / std from FastWAM training stats."""
+        if self.dataset_stats_path is None:
+            return
+        p = Path(self.dataset_stats_path)
+        if not p.exists():
+            warnings.warn(f"dataset_stats_path not found: {p}", stacklevel=2)
+            return
+        try:
+            import json
+
+            stats = json.loads(p.read_text())
+            image_stats = stats.get("images", stats)  # support both nesting styles
+            mean = image_stats.get("mean", [0.5, 0.5, 0.5])
+            std = image_stats.get("std", [0.5, 0.5, 0.5])
+            self._norm_mean = torch.tensor(mean, dtype=torch.float32)
+            self._norm_std = torch.tensor(std, dtype=torch.float32)
+        except Exception as exc:
+            warnings.warn(f"Failed to load dataset stats: {exc}", stacklevel=2)
+
+    # ------------------------------------------------------------------
+    # Loading
+    # ------------------------------------------------------------------
+    def load(self, checkpoint_path: str | None = None) -> None:
+        """Instantiate FastWAM, load weights, and ready for inference.
+
+        Args:
+            checkpoint_path: Overrides the path given at construction.
+        """
+        self._assert_available()
+
         ckpt = checkpoint_path or self.checkpoint_path
         if ckpt is None:
-            raise ValueError("checkpoint_path must be provided to load FastWAM.")
+            raise ValueError(
+                "checkpoint_path must be provided to load FastWAM. "
+                "Example: adapter.load('checkpoints/fastwam_release/libero_uncond_2cam224.pt')"
+            )
 
-        # Resolve task config
-        cfg_path = self.task_config_path
-        if cfg_path is None:
-            # Attempt sibling-directory heuristic inside the FastWAM repo
-            repo_root = Path(fw_runtime.__file__).resolve().parent.parent.parent
-            default_cfg = repo_root / "configs" / "model" / "fastwam.yaml"
-            if default_cfg.exists():
-                cfg_path = str(default_cfg)
-            else:
-                raise ValueError(
-                    "task_config_path not provided and auto-detection failed."
-                )
-
-        # Load Hydra config and instantiate model
+        cfg_path = self._resolve_cfg_path(self.cfg_path)
         self._cfg = OmegaConf.load(cfg_path)
-        # FastWAM runtime factory requires model + scheduler configs
-        self._model = fw_runtime.create_fastwam(
-            model_id=self._cfg.model.get("model_id", "Wan-AI/Wan2.2-TI2V-5B"),
-            tokenizer_model_id=self._cfg.model.get(
-                "tokenizer_model_id", "Wan-AI/Wan2.1-T2V-1.3B"
-            ),
-            video_dit_config=self._cfg.model.get("video_dit_config", {}),
-            action_dit_config=self._cfg.model.get("action_dit_config", {}),
-            action_dit_pretrained_path=self._cfg.model.get(
-                "action_dit_pretrained_path", None
-            ),
-            video_scheduler=self._cfg.model.get("video_scheduler", {}),
-            action_scheduler=self._cfg.model.get("action_scheduler", {}),
-            loss=self._cfg.model.get("loss", {}),
-            model_dtype=torch.bfloat16,
+        model_cfg = self._cfg.model if hasattr(self._cfg, "model") else self._cfg
+
+        action_dit_path = model_cfg.get("action_dit_pretrained_path")
+        if action_dit_path is None:
+            raise ValueError(
+                "model config is missing 'action_dit_pretrained_path'. "
+                "Run scripts/preprocess_action_dit_backbone.py first."
+            )
+
+        # FastWAM instantiates the full Wan2.2 backbone + ActionDiT head
+        self._model = FastWAM.from_wan22_pretrained(
             device=self.device,
+            torch_dtype=torch.bfloat16 if self.device != "cpu" else torch.float32,
+            model_id=model_cfg.get("model_id", "Wan-AI/Wan2.2-TI2V-5B"),
+            tokenizer_model_id=model_cfg.get("tokenizer_model_id", "Wan-AI/Wan2.1-T2V-1.3B"),
+            video_dit_config=model_cfg.get("video_dit_config", {}),
+            action_dit_config=model_cfg.get("action_dit_config", {}),
+            action_dit_pretrained_path=action_dit_path,
+            video_train_shift=model_cfg.get("video_scheduler", {}).get("train_shift", 5.0),
+            video_infer_shift=model_cfg.get("video_scheduler", {}).get("infer_shift", 5.0),
+            video_num_train_timesteps=model_cfg.get("video_scheduler", {}).get("num_train_timesteps", 1000),
+            action_train_shift=model_cfg.get("action_scheduler", {}).get("train_shift", 5.0),
+            action_infer_shift=model_cfg.get("action_scheduler", {}).get("infer_shift", 5.0),
+            action_num_train_timesteps=model_cfg.get("action_scheduler", {}).get("num_train_timesteps", 1000),
+            loss_lambda_video=model_cfg.get("loss", {}).get("lambda_video", 1.0),
+            loss_lambda_action=model_cfg.get("loss", {}).get("lambda_action", 1.0),
         )
 
         # Load fine-tuned weights
         ckpt_path = Path(ckpt)
-        if ckpt_path.exists():
-            state = torch.load(ckpt_path, map_location=self.device)
-            self._model.load_state_dict(state)
-            self._model.eval()
-        else:
+        if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+        self._model.load_checkpoint(str(ckpt_path))
+        self._model.eval()
 
-        self._vae = self._model.vae
+        self._load_dataset_stats()
 
-    # -------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Image preprocessing
+    # ------------------------------------------------------------------
+    def _preprocess_image(self, observation: np.ndarray | Tensor) -> Tensor:
+        """ observ → CHW float32 tensor, resized to multiple of 16. """
+        x = self._obs_to_tensor(observation)
+        if x.ndim == 3:
+            x = x.unsqueeze(0)  # (1, 3, H, W)
+
+        _, _, h, w = x.shape
+        # FastWAM expects H,W multiples of 16
+        new_h = (h + 15) // 16 * 16
+        new_w = (w + 15) // 16 * 16
+        if h != new_h or w != new_w:
+            x = torch.nn.functional.interpolate(
+                x, size=(new_h, new_w), mode="bilinear", align_corners=False
+            )
+
+        if self._norm_mean is not None and self._norm_std is not None:
+            mean = self._norm_mean.to(x.device).view(1, 3, 1, 1)
+            std = self._norm_std.to(x.device).view(1, 3, 1, 1)
+            x = (x - mean) / std
+        return x
+
+    # ------------------------------------------------------------------
     # Latent extraction
-    # -------------------------------------------------------------------
+    # ------------------------------------------------------------------
     def extract_latent(self, observation: np.ndarray | Tensor) -> Tensor:
         """Return a VAE latent for the observation.
 
-        FastWAM is a video diffusion model; for single-image observations
-        we encode through the Wan2.2 VAE and return the spatial latent
-        vector (flattened and L2-normalised).
+        Encodes the image through the Wan2.2 VAE, flattens the spatial
+        latent, and L2-normalises it.
 
         Shape: ``(d,)`` where *d* depends on image size and VAE channel
-        down-sampling factors.
+        down-sampling factors (typically ~ for a 224×224 image).
         """
         if self._model is None:
             raise RuntimeError("Model not loaded. Call .load() first.")
 
-        x = self._obs_to_tensor(observation).to(
+        x = self._preprocess_image(observation).to(
             device=self.device, dtype=self._model.torch_dtype
         )
-        if x.ndim == 3:
-            x = x.unsqueeze(0)  # (1, 3, H, W)
 
         with torch.no_grad():
-            # FastWAM VAE expects a list of 3D tensors [C, T, H, W]
-            # For a single image, T=1.
-            image = x[:, :, None, :, :]  # (1, 3, 1, H, W)
-            latent = self._vae.encode([image[0]], device=self.device)
-            if isinstance(latent, list):
-                latent = latent[0]
-            latent = latent.unsqueeze(0)
-            # Flatten spatial dims + channels -> single vector
-            flat = latent.flatten(1)  # (1, d)
+            # FastWAM's private helper; returns a single latent tensor
+            z = self._model._encode_input_image_latents_tensor(x[0])
+            flat = z.flatten(1).squeeze(0)
 
-        flat = flat.squeeze(0)
         flat = flat / (flat.norm(dim=-1, keepdim=True) + 1e-8)
         return flat
 
-    # -------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # Action prediction
-    # -------------------------------------------------------------------
+    # ------------------------------------------------------------------
     def predict_action(
         self,
         observation: np.ndarray | Tensor,
@@ -210,9 +298,13 @@ class FastWAMAdapter(BaseWAMAdapter):
         """Predict an action chunk via FastWAM inference.
 
         Args:
-            observation: uint8 RGB image.
-            state: Optional dict with keys ``prompt`` (str) and
-                ``num_frames`` / ``num_inference_steps``.
+            observation: uint8 RGB image (H, W, 3).
+            state: Optional dict with keys:
+                - ``prompt`` (str): task instruction
+                - ``proprio`` (Tensor): proprioception vector [D] or [1, D]
+                - ``num_inference_steps`` (int): diffusion steps
+                - ``action_horizon`` (int): prediction horizon
+                - ``seed`` (int): random seed for deterministic sampling
 
         Returns:
             (action, None) where *action* is the first step of the
@@ -221,46 +313,50 @@ class FastWAMAdapter(BaseWAMAdapter):
         if self._model is None:
             raise RuntimeError("Model not loaded. Call .load() first.")
 
-        x = self._obs_to_tensor(observation).to(
+        x = self._preprocess_image(observation).to(
             device=self.device, dtype=self._model.torch_dtype
         )
-        if x.ndim == 3:
-            x = x.unsqueeze(0)
 
         prompt = self.default_prompt
-        num_frames = 17
-        num_steps = 50
+        num_steps = self.num_inference_steps
+        horizon = self.action_horizon
+        seed = None
+        proprio: Tensor | None = None
+
         if isinstance(state, dict):
             prompt = state.get("prompt", prompt)
-            num_frames = state.get("num_frames", num_frames)
             num_steps = state.get("num_inference_steps", num_steps)
+            horizon = state.get("action_horizon", horizon)
+            seed = state.get("seed", seed)
+            proprio_raw = state.get("proprio", None)
+            if proprio_raw is not None:
+                proprio = self._obs_to_tensor(proprio_raw)
+                if proprio.ndim == 1:
+                    proprio = proprio.unsqueeze(0)
 
-        # Encode text prompt
-        prompt_emb, mask = self._model.encode_prompt(prompt)
+        with torch.no_grad():
+            result = self._model.infer_action(
+                prompt=prompt,
+                input_image=x[0],
+                action_horizon=horizon,
+                proprio=proprio,
+                num_inference_steps=num_steps,
+                seed=seed,
+            )
 
-# Encode input image latent (currently unused; scaffold for future)
-        self._model._encode_input_image_latents_tensor(x[0])
+        action = result["action"]  # (action_horizon, action_dim)
+        # Return the *first* action as the immediate control signal
+        first_action = action[0].detach().cpu().float()
+        return first_action, None
 
-        # TODO: run the full diffusion denoising loop to extract the
-        # action expert output.  FastWAM inference is non-trivial and
-        # should mirror the logic in ``experiments/libero/run_libero_*.py``.
-        # For now we return a zero tensor placeholder so that the pipeline
-        # can be wired end-to-end.
-        warnings.warn(
-            "FastWAMAdapter.predict_action is a scaffold. "
-            "Full diffusion-based action extraction is not yet implemented.",
-            stacklevel=2,
-        )
-        dummy_action = torch.zeros(self._guess_action_dim(), device=self.device)
-        return dummy_action, None
-
-    # -------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # Helpers
-    # -------------------------------------------------------------------
+    # ------------------------------------------------------------------
     @staticmethod
     def _obs_to_tensor(observation: np.ndarray | Tensor) -> Tensor:
         if isinstance(observation, np.ndarray):
-            # uint8 HWC → float CHW [0,1]
+            if observation.dtype != np.uint8:
+                observation = np.clip(observation, 0, 255).astype(np.uint8)
             if observation.ndim == 3:
                 arr = observation.astype(np.float32) / 255.0
                 arr = np.transpose(arr, (2, 0, 1))
@@ -274,13 +370,8 @@ class FastWAMAdapter(BaseWAMAdapter):
                 observation = observation.unsqueeze(0)
             if observation.shape[1] != 3 and observation.shape[-1] == 3:
                 observation = observation.permute(0, 3, 1, 2)
-            return observation.float()
+            return observation.float().clamp(0, 1)
         raise TypeError(f"Unexpected observation type: {type(observation)}")
-
-    def _guess_action_dim(self) -> int:
-        """Heuristic until proper action extraction is wired."""
-        # LIBERO / RoboTwin action spaces are typically 7-8 DoF
-        return 7
 
     def reset(self) -> None:
         pass

@@ -8,11 +8,17 @@ API keys.
 
 from __future__ import annotations
 
+import base64
+import io
+import json
+import os
+import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+import requests
 
 
 # ---------------------------------------------------------------------------
@@ -51,14 +57,21 @@ class BaseCritic(ABC):
 
     @abstractmethod
     def judge(
-        self, image: np.ndarray, edit_description: str, **kwargs: Any
+        self,
+        image: np.ndarray,
+        edit_description: str,
+        *,
+        original_image: np.ndarray | None = None,
+        **kwargs: Any,
     ) -> CriticResult:
         """Evaluate a single edited image.
 
         Args:
-            image: uint8 RGB array (H, W, 3).
+            image: uint8 RGB array (H, W, 3) – the *edited* image.
             edit_description: Human-readable description of the edit
                 (e.g. "motion_blur_k=5").
+            original_image: Optional original (un-edited) image for
+                comparison-based critics.
             **kwargs: Backend-specific options (temperature, retries, etc.).
 
         Returns:
@@ -74,7 +87,12 @@ class DummyCritic(BaseCritic):
     """Always passes.  Useful as a no-op placeholder."""
 
     def judge(
-        self, image: np.ndarray, edit_description: str, **kwargs: Any
+        self,
+        image: np.ndarray,
+        edit_description: str,
+        *,
+        original_image: np.ndarray | None = None,
+        **kwargs: Any,
     ) -> CriticResult:
         return CriticResult(
             is_realistic=True,
@@ -105,7 +123,12 @@ class HeuristicCritic(BaseCritic):
     MAX_UNIFORM_PCT: float = 0.90  # fraction of image with same value
 
     def judge(
-        self, image: np.ndarray, edit_description: str, **kwargs: Any
+        self,
+        image: np.ndarray,
+        edit_description: str,
+        *,
+        original_image: np.ndarray | None = None,
+        **kwargs: Any,
     ) -> CriticResult:
         if image.ndim != 3 or image.shape[2] != 3:
             return CriticResult(
@@ -174,4 +197,214 @@ class HeuristicCritic(BaseCritic):
             preserves_task=True,
             score=1.0,
             reason="Heuristic checks passed.",
+        )
+
+
+# ---------------------------------------------------------------------------
+# API-backed critic (OpenRouter → GPT-4o / etc.)
+# ---------------------------------------------------------------------------
+class APICritic(BaseCritic):
+    """Vision-capable LLM critic via OpenRouter (or any OpenAI-compatible endpoint).
+
+    Expects ``OPENROUTER_API_KEY`` as an environment variable, or pass
+    ``api_key`` explicitly.
+
+    Args:
+        api_key: OpenRouter (or OpenAI) API key.
+        model: Model identifier, e.g. ``"openai/gpt-4o-mini"`` (default),
+            ``"openai/gpt-4o"``, ``"anthropic/claude-3.5-sonnet"``, etc.
+        base_url: API base URL.  Default is OpenRouter.
+        timeout: HTTP timeout in seconds.
+        max_retries: Number of retries on transient errors.
+    """
+
+    _DEFAULT_PROMPT: str = (
+        "You are a visual quality critic for robot-learning research. "
+        "A robot-vision image was edited to simulate the following condition:\n\n"
+        "{edit_description}\n\n"
+        "The first attached image is the original observation. "
+        "The second attached image is the edited version. "
+        "Does the edited image plausibly reflect the described condition "
+        "while remaining a realistic camera observation? "
+        "Answer with a single word — 'yes' or 'no' — followed by a brief explanation."
+    )
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str = "openai/gpt-4o-mini",
+        base_url: str = "https://openrouter.ai/api/v1/chat/completions",
+        timeout: float = 30.0,
+        max_retries: int = 2,
+    ) -> None:
+        self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
+        if not self.api_key:
+            raise ValueError(
+                "APICritic requires an API key. "
+                "Set OPENROUTER_API_KEY env var or pass api_key=..."
+            )
+        self.model = model
+        self.base_url = base_url
+        self.timeout = timeout
+        self.max_retries = max_retries
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _encode_image(image: np.ndarray) -> str:
+        """uint8 RGB → base64 PNG data URI."""
+        from PIL import Image
+
+        if image.dtype != np.uint8:
+            image = np.clip(image, 0, 255).astype(np.uint8)
+        pil_img = Image.fromarray(image)
+        buf = io.BytesIO()
+        pil_img.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode()
+        return f"data:image/png;base64,{b64}"
+
+    def _call_api(
+        self,
+        prompt: str,
+        original_image: np.ndarray | None,
+        edited_image: np.ndarray,
+    ) -> dict[str, Any]:
+        """Build the multi-modal message and POST to the endpoint."""
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+
+        if original_image is not None:
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": self._encode_image(original_image)},
+                }
+            )
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": self._encode_image(edited_image)},
+            }
+        )
+
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": "You are a concise visual evaluator."},
+                {"role": "user", "content": content},
+            ],
+            "temperature": 0.0,
+            "max_tokens": 128,
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://localhost",
+            "X-Title": "WAM-ART",
+        }
+
+        last_exc: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                resp = requests.post(
+                    self.base_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=self.timeout,
+                )
+                resp.raise_for_status()
+                return resp.json()
+            except requests.RequestException as exc:
+                last_exc = exc
+                if attempt < self.max_retries:
+                    warnings.warn(
+                        f"APICritic API call failed (attempt {attempt + 1}): {exc}. Retrying...",
+                        stacklevel=3,
+                    )
+
+        # All retries exhausted
+        raise RuntimeError(
+            f"APICritic failed after {self.max_retries + 1} attempts. Last error: {last_exc}"
+        )
+
+    @staticmethod
+    def _parse_yes_no(text: str) -> bool | None:
+        """Heuristic parser: look for leading 'yes' or 'no'."""
+        t = text.strip().lower()
+        if t.startswith("yes"):
+            return True
+        if t.startswith("no"):
+            return False
+        # Fuzzy fallbacks
+        if "yes" in t[:20] and "no" not in t[:20]:
+            return True
+        if "no" in t[:20] and "yes" not in t[:20]:
+            return False
+        return None  # ambiguous
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    def judge(
+        self,
+        image: np.ndarray,
+        edit_description: str,
+        *,
+        original_image: np.ndarray | None = None,
+        **kwargs: Any,
+    ) -> CriticResult:
+        if image.ndim != 3 or image.shape[2] != 3:
+            return CriticResult(
+                is_realistic=False,
+                preserves_task=False,
+                score=0.0,
+                reason="Image must be HxWx3 RGB uint8.",
+            )
+
+        prompt = self._DEFAULT_PROMPT.format(edit_description=edit_description)
+        try:
+            data = self._call_api(prompt, original_image, image)
+        except RuntimeError as exc:
+            warnings.warn(f"APICritic API error, falling back to heuristic pass: {exc}", stacklevel=2)
+            # Fail-open so the benchmark doesn't die on flaky API calls.
+            return CriticResult(
+                is_realistic=True,
+                preserves_task=True,
+                score=0.5,
+                reason=f"API error; fail-open. {exc}",
+            )
+
+        try:
+            message = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError) as exc:
+            warnings.warn(f"Unexpected API response format: {exc}. Raw={json.dumps(data)[:200]}", stacklevel=2)
+            return CriticResult(
+                is_realistic=True,
+                preserves_task=True,
+                score=0.5,
+                reason="Unexpected API response format; fail-open.",
+            )
+
+        yn = self._parse_yes_no(message)
+        if yn is True:
+            return CriticResult(
+                is_realistic=True,
+                preserves_task=True,
+                score=1.0,
+                reason=message,
+            )
+        if yn is False:
+            return CriticResult(
+                is_realistic=False,
+                preserves_task=False,
+                score=0.0,
+                reason=message,
+            )
+        # Ambiguous → still pass but flag uncertainty
+        return CriticResult(
+            is_realistic=True,
+            preserves_task=True,
+            score=0.5,
+            reason=f"Ambiguous response: {message}",
         )

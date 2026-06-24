@@ -28,6 +28,7 @@ from wam_art.editing.corruptions import (
     saturation_shift,
 )
 from wam_art.editing.critic import (
+    APICritic,
     BaseCritic,
     CriticResult,
     DummyCritic,
@@ -55,6 +56,7 @@ __all__ = [
     "CriticResult",
     "DummyCritic",
     "HeuristicCritic",
+    "APICritic",
 ]
 
 
@@ -155,15 +157,17 @@ class RichPerturbationEditor(BaseEditor):
         )
 
         if self.critic is not None:
+            description = instruction or (
+                f"{self.factor_name}: {self.corruption} "
+                f"with {self.corruption_kwargs}"
+            )
             result = self.critic.judge(
                 edited,
-                edit_description=f"{self.factor_name}: {self.corruption} "
-                f"with {self.corruption_kwargs}",
+                edit_description=description,
+                original_image=image,
             )
             if not result.passes:
                 # Fallback: return the original image unmodified.
-                # Logged reason lets us audit how often this happens.
-                # A future version might retry with different params.
                 return image
 
         return edited

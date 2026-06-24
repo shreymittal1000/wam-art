@@ -106,7 +106,7 @@ class BenchmarkHarness:
 
     def run(
         self,
-        factors: list[tuple[str, str, dict[str, Any]]],
+        factors: list[tuple[str, str, dict[str, Any], str | None]],
         *,
         k: int = 5,
         target_anomaly_rate: float = 0.05,
@@ -118,7 +118,9 @@ class BenchmarkHarness:
         """Run the full benchmark loop.
 
         Args:
-            factors: List of (factor_name, corruption_name, kwargs).
+            factors: List of (factor_name, corruption_name, kwargs, description).
+                The 4th element is an optional human-readable semantic
+                description passed to the VLM critic.
             k: k-NN neighbourhood size for anomaly scoring.
             target_anomaly_rate: Nominal failure rate used to calibrate τ.
             instruction: Task instruction for action prediction.
@@ -157,7 +159,11 @@ class BenchmarkHarness:
         predicted_rates = []
         measured_values = []
 
-        for factor_name, corruption, kwargs in factors:
+        for item in factors:
+            factor_name = item[0]
+            corruption = item[1]
+            kwargs = item[2]
+            description = item[3] if len(item) > 3 else None
             t0 = time.perf_counter()
             editor = RichPerturbationEditor(
                 factor_name=factor_name,
@@ -169,8 +175,9 @@ class BenchmarkHarness:
             # Apply edits
             edited_images = []
             rejected = 0
+            factor_instruction = description or factor_name
             for img in self.nominal_images:
-                out = editor.edit(img, instruction=factor_name)
+                out = editor.edit(img, instruction=factor_instruction)
                 if np.array_equal(out, img):
                     rejected += 1  # critic rejected → fallback to original
                 edited_images.append(out)
