@@ -173,9 +173,10 @@ class MockSimulator(BaseSimulator):
         factor_str = getattr(adapter, "factor_name", task_str)
         heavy = 1.0 if "heavy" in factor_str.lower() else 0.0
         success = self.rng.random() < self.base_success_rate - heavy * 0.4
+        steps = max_steps if not success else self.rng.integers(min(10, max_steps), max_steps if max_steps > 10 else max_steps + 1)
         return EpisodeResult(
             success=bool(success),
-            steps=max_steps if not success else self.rng.integers(10, max_steps),
+            steps=steps,
             total_reward=1.0 if success else 0.0,
             image=None,
             info={"mock": True, "task": task_str},

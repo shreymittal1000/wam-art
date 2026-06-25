@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import torch
 from sklearn.neighbors import NearestNeighbors
 from torch import Tensor
 
@@ -23,8 +24,12 @@ def knn_cosine_distance(
         (N,) array of average cosine distances.
     """
     if isinstance(query, Tensor):
+        if query.dtype == torch.bfloat16:
+            query = query.to(torch.float32)
         query = query.detach().cpu().numpy()
     if isinstance(reference, Tensor):
+        if reference.dtype == torch.bfloat16:
+            reference = reference.to(torch.float32)
         reference = reference.detach().cpu().numpy()
 
     if query.ndim == 1:
@@ -36,22 +41,5 @@ def knn_cosine_distance(
     distances, _ = nn.kneighbors(query)
     return distances.mean(axis=1)
 
+from wam_art.latents.trajectory import sequence_manifold_distance, soft_nearest_trajectory_score, trajectory_descriptor
 
-def sequence_manifold_distance(
-    sequence: Tensor | np.ndarray,
-    reference_sequences: list[Tensor | np.ndarray],
-) -> float:
-    """Average distance of a latent sequence to a nominal manifold.
-
-    Placeholder for Approach B (temporal dynamics).
-    Currently uses pointwise knn; can be upgraded to trajectory distance.
-
-    Args:
-        sequence: (T, d) latent sequence.
-        reference_sequences: List of (T, d) reference sequences.
-
-    Returns:
-        Scalar distance.
-    """
-    # Flatten for now; proper manifold distance is future work
-    raise NotImplementedError("Sequence manifold distance requires proper implementation.")

@@ -62,7 +62,7 @@ class OpenVLAAdapter(BaseWAMAdapter):
         self,
         model_name: str = "openvla/openvla-7b",
         device: str = "cpu",
-        unnorm_key: str | None = None,
+        unnorm_key: str | None = "bridge_orig",
         default_instruction: str = "complete the task",
     ) -> None:
         super().__init__(model_name=model_name, device=device)
@@ -173,22 +173,22 @@ class OpenVLAAdapter(BaseWAMAdapter):
         if self._vla is None:
             raise RuntimeError("Model not loaded. Call .load() first.")
 
-        instruction = self._resolve_instruction(state)
         img = self._to_pil(observation)
 
         # OpenVLA natively implements `predict_action` on the model class.
         # Distinguish the two possible API shapes.
+        # NOTE: the model's predict_action expects input_ids + pixel_values;
+        # we build them via the processor here.
+        prompt = self._resolve_instruction(state)
+        inputs = self._processor(prompt, images=img, return_tensors="pt")
+        input_ids = inputs["input_ids"].to(self.device)
+        pixel_values = inputs["pixel_values"].to(self.device, dtype=self._vla.dtype)
+
         with torch.no_grad():
             if hasattr(self._vla, "predict_action"):
                 action = self._vla.predict_action(
-                    image=img,
-                    instruction=instruction,
-                    unnorm_key=self.unnorm_key,
-                )
-            elif hasattr(self._vla, "model") and hasattr(self._vla.model, "predict_action"):
-                action = self._vla.model.predict_action(
-                    image=img,
-                    instruction=instruction,
+                    input_ids=input_ids,
+                    pixel_values=pixel_values,
                     unnorm_key=self.unnorm_key,
                 )
             else:
