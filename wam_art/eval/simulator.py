@@ -317,7 +317,9 @@ class LiberoSimulator(BaseSimulator):
         init_states = self._task_suite.get_task_init_states(task_id)
         self._env.set_init_state(init_states[0])
 
-        obs = self._env._get_observation()
+        # In newer robosuite/libero, reset() returns obs directly
+        # and _get_observation() was removed. Re-call to get fresh obs.
+        obs = self._env.env.reset()
         return self._extract_image(obs)
 
     # ------------------------------------------------------------------

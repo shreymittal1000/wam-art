@@ -36,7 +36,10 @@ def knn_cosine_distance(
         query = query.reshape(1, -1)
 
     # Cosine distance = 1 - cosine similarity
-    nn = NearestNeighbors(n_neighbors=min(k, len(reference)), metric="cosine")
+    n_neighbors = min(k, len(reference))
+    if n_neighbors == 0 or len(reference) == 0:
+        return np.zeros(len(query)) if query.ndim > 1 else np.array([0.0])
+    nn = NearestNeighbors(n_neighbors=n_neighbors, metric="cosine")
     nn.fit(reference)
     distances, _ = nn.kneighbors(query)
     return distances.mean(axis=1)
