@@ -39,6 +39,8 @@ __all__ = [
     "BaseEditor",
     "SimplePerturbationEditor",
     "RichPerturbationEditor",
+    "VLMPerturbationEditor",
+    "GeminiPerturbationEditor",
     # corruptions
     "gaussian_noise",
     "salt_and_pepper",
@@ -171,3 +173,10 @@ class RichPerturbationEditor(BaseEditor):
                 return image
 
         return edited
+
+
+# Late import to avoid circular dependency (BaseEditor defined above)
+from wam_art.editing.vlm_editor import (  # noqa: E402
+    GeminiPerturbationEditor,
+    VLMPerturbationEditor,
+)

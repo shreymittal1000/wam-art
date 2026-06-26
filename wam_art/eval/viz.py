@@ -61,6 +61,17 @@ def plot_factor_comparison(
     ax.set_xticklabels(names, rotation=45, ha="right")
     ax.legend()
     ax.set_ylim(0, 1.2)
+
+    # If action divergence is uniformly zero, add a note on the plot
+    if max_div == 0.0:
+        ax.text(
+            0.99, 0.95,
+            "Action divergence: OFF",
+            transform=ax.transAxes,
+            ha="right", va="top", fontsize=9, color="gray",
+            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+        )
+
     fig.tight_layout()
 
     if output_path is not None:
@@ -90,13 +101,37 @@ def plot_predicted_vs_measured(
 
     ax.scatter(pred, meas, s=120, edgecolors="k", facecolors="steelblue", zorder=3)
 
+    # Add small jitter to avoid overlapping labels when points cluster
+    rng = np.random.default_rng(42)
+    jitter_x = rng.normal(0, 0.01, size=len(names))
+    jitter_y = rng.normal(0, 0.005, size=len(names))
+
     for i, name in enumerate(names):
-        ax.annotate(name, (pred[i], meas[i]), fontsize=7, xytext=(4, 4), textcoords="offset points")
+        ax.annotate(
+            name,
+            (pred[i] + jitter_x[i], meas[i] + jitter_y[i]),
+            fontsize=7,
+            xytext=(4, 4),
+            textcoords="offset points",
+            ha="left",
+            zorder=4,
+        )
 
     ax.set_xlabel("Predicted Success Rate (1 - anomaly rate)")
     ax.set_ylabel("Mean Action Divergence (proxy for failure)")
     ax.set_title(f"Predicted vs Measured — {report.model_name}")
     ax.grid(True, linestyle="--", alpha=0.5)
+
+    # If all measured values are zero (action divergence skipped), add a note
+    if all(m == 0.0 for m in meas):
+        ax.text(
+            0.5, 0.5,
+            "Action divergence disabled\n(run with action divergence enabled)",
+            transform=ax.transAxes,
+            ha="center", va="center", fontsize=10, color="gray",
+            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+        )
+
     fig.tight_layout()
 
     if output_path is not None:
