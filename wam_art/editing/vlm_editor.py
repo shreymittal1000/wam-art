@@ -68,7 +68,7 @@ class VLMPerturbationEditor(BaseEditor):
         "no code fences, and no extra commentary.\n\n"
         "{registry_help}\n\n"
         "Return format (EXACTLY this JSON, nothing else):\n"
-        '{"corruption": "...", "params": {...}, "explanation": "..."}'
+        '{{"corruption": "...", "params": {{...}}, "explanation": "..."}}'
     )
 
     def __init__(
