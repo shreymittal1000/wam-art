@@ -226,11 +226,10 @@ class VLMPerturbationEditor(BaseEditor):
             message = api_resp["choices"][0]["message"]["content"]
             corruption, params, explanation = self._parse_planner_response(message)
         except Exception as exc:
-            warnings.warn(
-                f"VLMPerturbationEditor planning failed: {exc}. Returning original image.",
-                stacklevel=2,
-            )
-            return image
+            raise RuntimeError(
+                f"VLMPerturbationEditor planning failed: {exc}. "
+                f"Image was not modified."
+            ) from exc
 
         if corruption not in self._available_corruptions:
             warnings.warn(
@@ -256,16 +255,16 @@ class VLMPerturbationEditor(BaseEditor):
 
 
 class GeminiPerturbationEditor(VLMPerturbationEditor):
-    """Convenience alias for VLMPerturbationEditor using Gemini via OpenRouter.
+    """Convenience alias for VLMPerturbationEditor.
 
-    Uses ``google/gemini-2.5-flash`` by default.
+    Uses ``openai/gpt-4o`` by default for stronger planning.
     """
 
     def __init__(
         self,
         factor_name: str,
         api_key: str | None = None,
-        model: str = "google/gemini-2.5-flash",
+        model: str = "openai/gpt-4o",
         **kwargs: Any,
     ) -> None:
         super().__init__(
