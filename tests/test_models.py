@@ -94,7 +94,8 @@ def test_fastwam_obs_to_tensor() -> None:
     adapter = FastWAMAdapter(device="cpu")
     hwc = np.random.randint(0, 256, size=(64, 64, 3), dtype=np.uint8)
     tensor = adapter._obs_to_tensor(hwc)
-    assert tensor.shape == (1, 3, 64, 64)
+    # ndim==3 numpy → CHW (no batch dim; _preprocess_image adds it later)
+    assert tensor.shape == (3, 64, 64), f"Expected (3,64,64), got {tensor.shape}"
     assert tensor.dtype == torch.float32
 
     bhwc = np.random.randint(0, 256, size=(2, 64, 64, 3), dtype=np.uint8)
@@ -107,6 +108,7 @@ def test_fastwam_obs_to_tensor_from_float_tensor() -> None:
     adapter = FastWAMAdapter(device="cpu")
     img = torch.rand(64, 64, 3)
     tensor = adapter._obs_to_tensor(img)
+    # torch Tensor HWC → (1, 3, H, W) with batch dim
     assert tensor.shape == (1, 3, 64, 64)
 
 

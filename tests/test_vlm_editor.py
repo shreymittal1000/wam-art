@@ -46,7 +46,7 @@ class TestGeminiPerturbationEditor:
             factor_name="test",
             api_key="fake_key_for_test",
         )
-        assert editor.model == "google/gemini-2.5-flash"
+        assert editor.model == "openai/gpt-4o"
 
     def test_missing_api_key(self):
         # Temporarily clear env var if present
@@ -70,9 +70,8 @@ class TestGeminiPerturbationEditor:
 
         monkeypatch.setattr(editor, "_call_api", fake_call)
         img = np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8)
-        out = editor.edit(img, "make it blurry")
-        # Should return original image on failure
-        np.testing.assert_array_equal(out, img)
+        with pytest.raises(RuntimeError, match="planning failed"):
+            editor.edit(img, "make it blurry")
 
     def test_fail_open_on_unknown_corruption(self, monkeypatch):
         editor = GeminiPerturbationEditor(

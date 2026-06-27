@@ -23,3 +23,9 @@ try:
     __all__.append("FastWAMAdapter")
 except Exception:  # noqa: S110
     pass
+
+try:
+    from wam_art.models.dreamzero import DreamZeroAdapter  # noqa: F401
+    __all__.append("DreamZeroAdapter")
+except Exception:  # noqa: S110
+    pass

@@ -112,7 +112,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="WAM-ART benchmark runner")
     parser.add_argument(
         "--model",
-        choices=["dummy", "openvla", "fastwam"],
+        choices=["dummy", "openvla", "fastwam", "dreamzero"],
         default="dummy",
         help="Which WAM adapter to benchmark",
     )
@@ -187,6 +187,50 @@ def main() -> int:
         choices=["libero_spatial", "libero_object", "libero_goal", "libero_90", "libero_10", "libero_100"],
         help="LIBERO sub-benchmark name",
     )
+    # ---- FastWAM-specific args ----
+    parser.add_argument(
+        "--checkpoint-path",
+        type=str,
+        default=None,
+        help="Path to FastWAM/DreamZero checkpoint (.pt file or dir)",
+    )
+    parser.add_argument(
+        "--cfg-path",
+        type=str,
+        default=None,
+        help="Path to FastWAM Hydra model config (fastwam.yaml)",
+    )
+    parser.add_argument(
+        "--dataset-stats-path",
+        type=str,
+        default=None,
+        help="Path to FastWAM dataset_stats.json for normalization",
+    )
+    parser.add_argument(
+        "--action-horizon",
+        type=int,
+        default=16,
+        help="Number of future action steps to predict (FastWAM/DreamZero)",
+    )
+    parser.add_argument(
+        "--num-inference-steps",
+        type=int,
+        default=20,
+        help="Diffusion denoising steps (FastWAM)",
+    )
+    # ---- DreamZero-specific args ----
+    parser.add_argument(
+        "--server-host",
+        type=str,
+        default="localhost",
+        help="DreamZero WebSocket server hostname",
+    )
+    parser.add_argument(
+        "--server-port",
+        type=int,
+        default=5000,
+        help="DreamZero WebSocket server port",
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -209,6 +253,8 @@ def main() -> int:
     print(f"Action div:  {'OFF' if args.no_action_divergence else 'ON'}")
     print(f"Output:      {args.output}")
     print(f"Critic:      {args.critic}")
+    if args.model in ("fastwam", "dreamzero"):
+        print(f"Horizon:     {args.action_horizon}")
     if args.simulator:
         print(f"Simulator:   {args.simulator} ({args.n_sim_episodes} episodes)")
     print()
@@ -270,9 +316,100 @@ def main() -> int:
     elif args.model == "fastwam":
         from wam_art.models.fastwam import FastWAMAdapter
 
-        adapter = FastWAMAdapter(device=args.device)
-        print("Loading FastWAM (requires repo cloned + checkpoint path)...")
-        adapter.load()  # will raise if not properly configured
+        # Resolve checkpoint path (env var → CLI arg → heuristic)
+        ckpt = (
+            args.checkpoint_path
+            or os.environ.get("FASTWAM_CHECKPOINT_PATH")
+        )
+        if ckpt is None:
+            # Heuristic: look for common paths
+            for guess in [
+                "checkpoints/fastwam_release/libero_uncond_2cam224.pt",
+                "../FastWAM/checkpoints/libero_uncond_2cam224.pt",
+            ]:
+                if Path(guess).exists():
+                    ckpt = str(Path(guess).resolve())
+                    break
+
+        if ckpt is None:
+            print(
+                "[FastWAM] No checkpoint found. Set --checkpoint-path or "
+                "FASTWAM_CHECKPOINT_PATH env var.\n"
+                "  Download: huggingface-cli download yuanty/fastwam \\\n"
+                "    libero_uncond_2cam224.pt --local-dir ./checkpoints/fastwam_release"
+            )
+            sys.exit(1)
+
+        if not Path(ckpt).exists():
+            print(f"[FastWAM] Checkpoint not found: {ckpt}")
+            sys.exit(1)
+
+        cfg = (
+            args.cfg_path
+            or os.environ.get("FASTWAM_CFG_PATH")
+        )
+        stats = (
+            args.dataset_stats_path
+            or os.environ.get("FASTWAM_DATASET_STATS_PATH")
+        )
+
+        print(f"[FastWAM] Checkpoint:  {ckpt}")
+        if cfg:
+            print(f"[FastWAM] Config:      {cfg}")
+        if stats:
+            print(f"[FastWAM] Stats:       {stats}")
+        print(f"[FastWAM] Horizon:     {args.action_horizon}")
+        print(f"[FastWAM] Inf steps:   {args.num_inference_steps}")
+
+        adapter = FastWAMAdapter(
+            model_name=f"fastwam-{Path(ckpt).stem}",
+            device=args.device,
+            checkpoint_path=ckpt,
+            cfg_path=cfg,
+            dataset_stats_path=stats,
+            action_horizon=args.action_horizon,
+            num_inference_steps=args.num_inference_steps,
+        )
+        print("Loading FastWAM (downloading Wan2.2 backbone if needed)...")
+        adapter.load()
+    elif args.model == "dreamzero":
+        from wam_art.models.dreamzero import DreamZeroAdapter
+
+        host = (
+            args.server_host
+            or os.environ.get("DREAMZERO_HOST", "localhost")
+        )
+        port = (
+            args.server_port
+            or int(os.environ.get("DREAMZERO_PORT", "5000"))
+        )
+
+        print(f"[DreamZero] Server: {host}:{port}")
+        print(f"[DreamZero] Horizon: {args.action_horizon}")
+
+        adapter = DreamZeroAdapter(
+            model_name="dreamzero",
+            device=args.device,
+            server_host=host,
+            server_port=port,
+            checkpoint_path=args.checkpoint_path,
+            action_horizon=args.action_horizon,
+        )
+        print("Connecting to DreamZero inference server...")
+        try:
+            adapter.load()
+            print("[DreamZero] Connected! Server is ready.")
+        except RuntimeError as exc:
+            print(f"[DreamZero] Connection failed: {exc}")
+            print(
+                "\nStart the DreamZero server first:\n"
+                "  CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.run \\\n"
+                "    --standalone --nproc_per_node=2 \\\n"
+                "    socket_test_optimized_AR.py \\\n"
+                "    --port 5000 --enable-dit-cache \\\n"
+                "    --model-path ./checkpoints/DreamZero-DROID"
+            )
+            sys.exit(1)
     else:
         raise ValueError(f"Unknown model: {args.model}")
 
