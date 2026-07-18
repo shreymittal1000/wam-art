@@ -48,7 +48,7 @@ def calibrate_threshold(
 def compute_anomaly_rates(
     scores: NDArray[np.float64],
     threshold: float,
-) -> NDArray[np.float64]:
+) -> tuple[NDArray[np.float64], float]:
     """Compute per-sample anomaly flags and overall rate.
 
     Args:

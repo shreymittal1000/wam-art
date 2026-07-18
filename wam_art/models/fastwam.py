@@ -202,7 +202,8 @@ class FastWAMAdapter(BaseWAMAdapter):
         model_cfg = self._cfg.model if hasattr(self._cfg, "model") else self._cfg
 
         action_dit_path = model_cfg.get("action_dit_pretrained_path")
-        if action_dit_path is None:
+        skip_dit_load = bool(model_cfg.get("skip_dit_load_from_pretrain", False))
+        if action_dit_path is None and not skip_dit_load:
             raise ValueError(
                 "model config is missing 'action_dit_pretrained_path'. "
                 "Run scripts/preprocess_action_dit_backbone.py first."
@@ -214,9 +215,19 @@ class FastWAMAdapter(BaseWAMAdapter):
             torch_dtype=torch.bfloat16 if self.device != "cpu" else torch.float32,
             model_id=model_cfg.get("model_id", "Wan-AI/Wan2.2-TI2V-5B"),
             tokenizer_model_id=model_cfg.get("tokenizer_model_id", "Wan-AI/Wan2.1-T2V-1.3B"),
-            video_dit_config=model_cfg.get("video_dit_config", {}),
-            action_dit_config=model_cfg.get("action_dit_config", {}),
+            tokenizer_max_len=model_cfg.get("tokenizer_max_len", 128),
+            load_text_encoder=bool(model_cfg.get("load_text_encoder", False)),
+            proprio_dim=model_cfg.get("proprio_dim", None),
+            redirect_common_files=bool(model_cfg.get("redirect_common_files", True)),
+            video_dit_config=OmegaConf.to_container(
+                model_cfg.get("video_dit_config", {}), resolve=True
+            ),
+            action_dit_config=OmegaConf.to_container(
+                model_cfg.get("action_dit_config", {}), resolve=True
+            ),
             action_dit_pretrained_path=action_dit_path,
+            skip_dit_load_from_pretrain=skip_dit_load,
+            mot_checkpoint_mixed_attn=bool(model_cfg.get("mot_checkpoint_mixed_attn", True)),
             video_train_shift=model_cfg.get("video_scheduler", {}).get("train_shift", 5.0),
             video_infer_shift=model_cfg.get("video_scheduler", {}).get("infer_shift", 5.0),
             video_num_train_timesteps=model_cfg.get("video_scheduler", {}).get("num_train_timesteps", 1000),

@@ -366,17 +366,16 @@ class TestBenchmarkHarness:
         harness = BenchmarkHarness(
             dummy_wam, nominal_images, device="cpu", simulator=sim
         )
-        report = harness.run(
-            factors=[
-                (name, corr, kw, name)
-                for name, corr, kw in small_factors[:2]
-            ],
-            k=3,
-            target_anomaly_rate=0.05,
-            n_sim_episodes=3,
-        )
-        for fr in report.factor_results:
-            assert 0.0 <= fr.measured_success_rate <= 1.0
+        with pytest.raises(RuntimeError, match="cannot produce connected simulator labels"):
+            harness.run(
+                factors=[
+                    (name, corr, kw, name)
+                    for name, corr, kw in small_factors[:2]
+                ],
+                k=3,
+                target_anomaly_rate=0.05,
+                n_sim_episodes=3,
+            )
 
     def test_harness_run_overall_metrics(
         self,

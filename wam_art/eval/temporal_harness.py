@@ -210,6 +210,11 @@ class TemporalBenchmarkHarness:
         k: int = 3,
         instruction: str = "complete the task",
     ) -> TrajectoryBenchmarkReport:
+        raise RuntimeError(
+            "TemporalBenchmarkHarness.run is disabled until corrupted observations "
+            "are injected into the same closed-loop episodes that provide success "
+            "labels. Use OnlineWAMARTScorer for connected evaluation."
+        )
         print(f"[TemporalHarness] Collecting {n_trajectories} nominal trajectories")
         obs_trajs, latent_trajs = self.collect_nominal_trajectories(
             n_trajectories=n_trajectories,

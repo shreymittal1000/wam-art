@@ -9,9 +9,8 @@ Examples:
     python scripts/run_benchmark.py --model openvla --n-samples 5 \
         --device cpu --no-action-divergence
 
-    # With mock simulator (deterministic success rates)
-    python scripts/run_benchmark.py --model dummy --n-samples 20 \
-        --simulator mock --n-sim-episodes 10
+    # Real behavioral validation uses the connected evaluator described in
+    # docs/connected_fastwam_libero.md.
 
     # With API-based VLM critic
     python scripts/run_benchmark.py --model openvla --n-samples 50 \
@@ -166,7 +165,7 @@ def main() -> int:
         "--simulator",
         choices=["mock", "libero"],
         default=None,
-        help="Optional MuJoCo simulator for real success-rate evaluation",
+        help="Deprecated: disconnected simulator measurement is disabled",
     )
     parser.add_argument(
         "--n-sim-episodes",
@@ -234,6 +233,12 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
+    if args.simulator is not None:
+        parser.error(
+            "--simulator is disabled because the legacy path did not apply edits "
+            "to the episodes used as labels. See docs/connected_fastwam_libero.md."
+        )
+
     # Load .env if present
     env_path = Path(__file__).resolve().parent.parent / ".env"
     if env_path.exists():
@@ -278,28 +283,10 @@ def main() -> int:
         critic = APICritic(model=args.critic_model)
 
     # ------------------------------------------------------------------
-    # 2. Build simulator (if requested)
+    # 2. The offline runner never produces behavioral labels. Connected
+    # evaluation is performed inside the real policy loop.
     # ------------------------------------------------------------------
     simulator = None
-    if args.simulator == "mock":
-        from wam_art.eval.simulator import MockSimulator
-
-        simulator = MockSimulator(base_success_rate=0.8, seed=args.seed)
-        print("[Simulator] MockSimulator ready")
-    elif args.simulator == "libero":
-        from wam_art.eval.simulator import LiberoSimulator
-
-        print("[Simulator] Instantiating LiberoSimulator...")
-        try:
-            simulator = LiberoSimulator(benchmark_name=args.sim_benchmark)
-        except Exception as exc:
-            print(f"[Simulator] Libero init failed: {exc}")
-            print("[Simulator] Falling back to MockSimulator")
-            from wam_art.eval.simulator import MockSimulator
-
-            simulator = MockSimulator(base_success_rate=0.8, seed=args.seed)
-        else:
-            print(f"[Simulator] LiberoSimulator loaded: {args.sim_benchmark}")
 
     # ------------------------------------------------------------------
     # 3. Load WAM adapter

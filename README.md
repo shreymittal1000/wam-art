@@ -1,7 +1,23 @@
 # WAM-ART: Predictive Red Teaming for World Action Models
 
 Inference-only approach to predicting WAM policy failures under visual perturbations,
-adapted from the RoboART methodology.
+adapted from the RoboART methodology. A valid WAM-ART evaluation scores the exact
+observations consumed by the policy and pairs those scores with success from the
+same closed-loop episode.
+
+## Evaluation contract
+
+WAM-ART has two explicit run modes:
+
+1. **Collect** — run clean, successful episodes and build a nominal WAM-latent
+   reference plus a calibrated anomaly threshold.
+2. **Score** — corrupt observations online, score the exact policy-input tensor,
+   and store the prediction beside the simulator's outcome for that episode.
+
+Offline synthetic-image runs are useful smoke tests, but they are not behavioral
+validation. `measured_success_rate` is `null` in offline reports. The legacy
+simulator path is disabled because it did not inject edits into the episodes it
+used as labels.
 
 ## Quick Start
 
@@ -19,9 +35,8 @@ python scripts/run_benchmark.py --model dummy --n-samples 20
 python scripts/run_benchmark.py --model openvla --n-samples 50 \
     --device cuda --output results/openvla_run1
 
-# 5. Run with a simulator (real task success measurement)
-python scripts/run_benchmark.py --model dummy --n-samples 20 \
-    --simulator mock --n-sim-episodes 10
+# 5. Connected FastWAM + LIBERO evaluation
+# See docs/connected_fastwam_libero.md
 
 # 6. Run tests
 pytest tests/
@@ -90,8 +105,10 @@ All adapters expose the same three methods:
 
 ### Simulators
 
-``wam_art.eval.simulator`` provides a pluggable interface for real
-robot benchmark environments:
+``wam_art.eval.simulator`` provides environment primitives and mocks. The
+offline ``BenchmarkHarness`` intentionally refuses simulator measurements,
+because its edited images are not consumed by those simulator episodes. Use
+``OnlineWAMARTScorer`` inside the real policy loop for behavioral validation.
 
 - ``MockSimulator`` — deterministic, no rendering.  Heavily corrupted
   observations have lower baseline success.  Perfect for CI and fast
@@ -100,14 +117,13 @@ robot benchmark environments:
   Requires an off-screen renderer (EGL, OSMesa, or Xvfb+GLFW).  Falls
   back to ``MockSimulator`` automatically when rendering is unavailable.
 
-Usage::
+Environment-only usage::
 
     from wam_art.eval.simulator import LiberoSimulator, MockSimulator
 
     sim = LiberoSimulator("libero_spatial")
     print(sim.list_tasks())
-    result = sim.run_episode(adapter, task_id=0, max_steps=100)
-    print(result.success, result.steps)
+    print(sim.list_tasks())
 
 **Roadmap**
 

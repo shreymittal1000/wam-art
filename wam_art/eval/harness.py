@@ -47,7 +47,7 @@ class FactorResult:
     mean_anomaly_score: float
     max_anomaly_score: float
     editor_reject_rate: float        # fraction of edits blocked by critic
-    measured_success_rate: float = 0.0  # from simulator (0.0 if not used)
+    measured_success_rate: float | None = None
     latency_sec: float = 0.0           # total time for this factor
 
 
@@ -141,7 +141,11 @@ class BenchmarkHarness:
         print(f"[Harness] Running benchmark on {n_nominal} nominal observations")
         print(f"[Harness] Model: {self.adapter.model_name} | Device: {self.device}")
         if self.simulator is not None:
-            print(f"[Harness] Simulator: {type(self.simulator).__name__}")
+            raise RuntimeError(
+                "BenchmarkHarness cannot produce connected simulator labels: its "
+                "edited images are not the observations consumed by run_episode. "
+                "Use OnlineWAMARTScorer inside the real policy loop instead."
+            )
 
         # 1. Extract nominal latents
         nominal_latents = self._extract_latents(self.nominal_images)
@@ -201,11 +205,7 @@ class BenchmarkHarness:
                 max_div = float(np.max(divergences))
 
             # Simulator-based measured success rate
-            measured_succ = 0.0
-            if self.simulator is not None:
-                measured_succ = self._measure_with_simulator(
-                    edited_images, n_sim_episodes, task_id
-                )
+            measured_succ = None
 
             latency = time.perf_counter() - t0
 
@@ -225,16 +225,11 @@ class BenchmarkHarness:
             )
             factor_results.append(fr)
             predicted_rates.append(predicted_success)
-            measured_values.append(
-                measured_succ if self.simulator is not None else mean_div
-            )
+            measured_values.append(mean_div)
 
-            sim_str = ""
-            if self.simulator is not None:
-                sim_str = f"  sim_succ={measured_succ:.3f}"
             print(
                 f"  {factor_name:30s}  pred_succ={predicted_success:.3f}  "
-                f"mean_div={mean_div:.4f}{sim_str}  ({latency:.1f}s)"
+                f"mean_div={mean_div:.4f}  ({latency:.1f}s)"
             )
 
         # 4. Overall metrics
@@ -268,7 +263,7 @@ class BenchmarkHarness:
         n_episodes: int,
         task_id: int | str,
     ) -> float:
-        """Run simulated episodes with the adapter on perturbed images.
+        """Deprecated disconnected simulator path.
 
         The adapter is not actually used to step the environment here;
         the simulator's ``run_episode`` handles the full agent loop.
@@ -281,16 +276,10 @@ class BenchmarkHarness:
         we run the simulator's default loop to get a binary success
         signal.
         """
-        if self.simulator is None:
-            return 0.0
-        successes = 0
-        for seed in range(n_episodes):
-            result = self.simulator.run_episode(
-                self.adapter, task_id=task_id, max_steps=100, seed=seed
-            )
-            if result.success:
-                successes += 1
-        return successes / n_episodes
+        raise RuntimeError(
+            "Disconnected simulator measurement is disabled. Use "
+            "OnlineWAMARTScorer in the policy loop."
+        )
 
     # ------------------------------------------------------------------
     # Helpers

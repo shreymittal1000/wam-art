@@ -65,18 +65,15 @@ def test_harness_with_mock_simulator() -> None:
         ("blur_light", "gaussian_blur", {"kernel_size": 5}),
         ("blur_heavy", "gaussian_blur", {"kernel_size": 15}),
     ]
-    report = harness.run(
-        factors=factors,
-        k=2,
-        target_anomaly_rate=0.05,
-        measure_action_divergence=False,
-        n_sim_episodes=10,
-        task_id=0,
-    )
-    assert report.n_factors == 2
-    for fr in report.factor_results:
-        # measured_success_rate should be present and between 0 and 1
-        assert 0.0 <= fr.measured_success_rate <= 1.0
+    with pytest.raises(RuntimeError, match="cannot produce connected simulator labels"):
+        harness.run(
+            factors=factors,
+            k=2,
+            target_anomaly_rate=0.05,
+            measure_action_divergence=False,
+            n_sim_episodes=10,
+            task_id=0,
+        )
 
 
 # ---------------------------------------------------------------------------

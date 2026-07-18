@@ -6,6 +6,13 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.stats import spearmanr
 
+from wam_art.eval.online import (
+    EpisodePrediction,
+    OnlineRunReport,
+    OnlineWAMARTScorer,
+    fastwam_vae_latent_extractor,
+)
+
 
 def spearman_rank_correlation(
     predicted: NDArray[np.float64],
