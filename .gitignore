@@ -41,7 +41,7 @@ venv.bak/
 .ipynb_checkpoints/
 *.ipynb
 
-# Data / artifacts (NEVER commit these)
+# Data / heavyweight artifacts
 data/
 *.h5
 *.hdf5
@@ -54,11 +54,17 @@ data/
 checkpoints/
 runs/
 outputs/
-results/
+# Curated benchmark results are intentionally versioned because compute
+# instances are ephemeral. Keep ad-hoc result folders ignored.
+results/*
+!results/README.md
+!results/benchmarks/
+!results/benchmarks/**
 wandb/
 
 # Logs
 *.log
+!results/benchmarks/**/*.log
 
 # OS
 .DS_Store

@@ -1,0 +1,32 @@
+diff --git a/script/eval_policy.py b/script/eval_policy.py
+--- a/script/eval_policy.py
++++ b/script/eval_policy.py
+@@ -256,6 +256,9 @@ def eval_policy(task_name,
+     policy_name = args["policy_name"]
+     eval_func = eval_function_decorator(policy_name, "eval")
+     reset_func = eval_function_decorator(policy_name, "reset_model")
++    policy_module = importlib.import_module(policy_name)
++    start_func = getattr(policy_module, "start_episode", None)
++    finish_func = getattr(policy_module, "finish_episode", None)
+ 
+     now_seed = st_seed
+     task_total_reward = 0
+@@ -362,6 +365,8 @@ def eval_policy(task_name,
+ 
+         succ = False
+         reset_func(model)
++        if start_func is not None:
++            start_func(model, now_seed)
+         while TASK_ENV.take_action_cnt < TASK_ENV.step_lim:
+             need_obs = True
+             if skip_get_obs_within_replan and hasattr(model, "should_request_observation"):
+@@ -393,6 +398,9 @@ def eval_policy(task_name,
+         else:
+             print("\033[91mFail!\033[0m")
+ 
++        if finish_func is not None:
++            finish_func(model, succ, now_seed)
++
+         now_id += 1
+         TASK_ENV.close_env(clear_cache=((succ_seed + 1) % clear_cache_freq == 0))
+ 

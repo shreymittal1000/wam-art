@@ -34,7 +34,14 @@ def test_collect_reference_and_score_same_episode(tmp_path) -> None:
     )
     scorer.observe(_image(0.25))
     scorer.observe(torch.flip(_image(0.25), dims=(-1,)))
-    scorer.end_episode(measured_success=False)
+    scorer.end_episode(
+        measured_success=False,
+        metadata={
+            "environment_seed": 100001,
+            "policy_seed": 42,
+            "corruption_seed": 7,
+        },
+    )
     report = scorer.build_report(
         model_name="test-wam",
         task_suite="libero_spatial",
@@ -50,12 +57,15 @@ def test_collect_reference_and_score_same_episode(tmp_path) -> None:
     assert report.episodes[0].measured_success is False
     assert report.episodes[0].predicted_success_rate is not None
     assert report.episodes[0].n_observations == 2
+    assert report.episodes[0].metadata["environment_seed"] == 100001
 
     output = tmp_path / "report.json"
     report.save(output)
     payload = json.loads(output.read_text())
     assert payload["episodes"][0]["measured_success"] is False
     assert payload["corruption_kwargs"] == {"ratio": 0.35}
+    assert payload["schema_version"] == 2
+    assert payload["episodes"][0]["metadata"]["corruption_seed"] == 7
 
 
 def test_reference_uses_only_successful_episodes(tmp_path) -> None:

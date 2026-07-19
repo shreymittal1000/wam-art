@@ -35,8 +35,10 @@ python scripts/run_benchmark.py --model dummy --n-samples 20
 python scripts/run_benchmark.py --model openvla --n-samples 50 \
     --device cuda --output results/openvla_run1
 
-# 5. Connected FastWAM + LIBERO evaluation
-# See docs/connected_fastwam_libero.md
+# 5. Connected FastWAM + RoboTwin evaluation (primary)
+# See docs/connected_fastwam_robotwin.md
+
+# LIBERO historical evaluation notes remain in docs/connected_fastwam_libero.md
 
 # 6. Run tests
 pytest tests/

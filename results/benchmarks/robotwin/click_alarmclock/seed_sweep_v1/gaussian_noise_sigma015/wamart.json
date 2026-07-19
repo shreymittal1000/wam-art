@@ -1,0 +1,66 @@
+{
+  "schema_version": 2,
+  "mode": "score",
+  "model_name": "robotwin_uncond_3cam_384",
+  "task_suite": "robotwin",
+  "task_id": 0,
+  "task_description": "click_alarmclock",
+  "corruption": "gaussian_noise",
+  "corruption_kwargs": {
+    "sigma": 0.15
+  },
+  "reference_path": "../reference/click_alarmclock.npz",
+  "threshold": 0.3965775966644287,
+  "k": 5,
+  "target_anomaly_rate": 0.05,
+  "successes": 1,
+  "total_episodes": 3,
+  "measured_success_rate": 0.3333333333333333,
+  "episodes": [
+    {
+      "episode_idx": 0,
+      "measured_success": false,
+      "n_observations": 17,
+      "predicted_success_rate": 0.0,
+      "anomaly_rate": 1.0,
+      "mean_anomaly_score": 0.4921148419380188,
+      "max_anomaly_score": 0.4986646771430969,
+      "metadata": {
+        "environment_seed": 100000,
+        "policy_seed": 0,
+        "corruption_seed": 0,
+        "corruption_seed_derivation": "base + episode_index * 1000000 + observation_index"
+      }
+    },
+    {
+      "episode_idx": 1,
+      "measured_success": true,
+      "n_observations": 3,
+      "predicted_success_rate": 0.0,
+      "anomaly_rate": 1.0,
+      "mean_anomaly_score": 0.4935232698917389,
+      "max_anomaly_score": 0.5112737417221069,
+      "metadata": {
+        "environment_seed": 100002,
+        "policy_seed": 1,
+        "corruption_seed": 0,
+        "corruption_seed_derivation": "base + episode_index * 1000000 + observation_index"
+      }
+    },
+    {
+      "episode_idx": 2,
+      "measured_success": false,
+      "n_observations": 17,
+      "predicted_success_rate": 0.0,
+      "anomaly_rate": 1.0,
+      "mean_anomaly_score": 0.5616820454597473,
+      "max_anomaly_score": 0.5854670405387878,
+      "metadata": {
+        "environment_seed": 100003,
+        "policy_seed": 2,
+        "corruption_seed": 0,
+        "corruption_seed_derivation": "base + episode_index * 1000000 + observation_index"
+      }
+    }
+  ]
+}

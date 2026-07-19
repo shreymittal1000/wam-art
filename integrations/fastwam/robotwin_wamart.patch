@@ -1,0 +1,263 @@
+diff --git a/configs/sim_robotwin.yaml b/configs/sim_robotwin.yaml
+--- a/configs/sim_robotwin.yaml
++++ b/configs/sim_robotwin.yaml
+@@ -9,6 +9,7 @@ ckpt: null
+ 
+ model:
+   load_text_encoder: true
++  redirect_common_files: false
+   skip_dit_load_from_pretrain: true
+   action_dit_pretrained_path: null
+ 
+@@ -38,6 +38,16 @@ EVALUATION:
+   dataset_stats_path: null
+   device: cuda
+ 
++  # WAM-ART connected evaluation
++  wamart_mode: null
++  wamart_reference_path: null
++  wamart_output_path: null
++  wamart_k: 5
++  wamart_target_anomaly_rate: 0.05
++  wamart_corruption: null
++  wamart_corruption_kwargs: {}
++  wamart_corruption_seed: 0
++
+ MULTIRUN:
+   enabled: false
+   num_gpus: 8
+diff --git a/experiments/robotwin/eval_robotwin_single.py b/experiments/robotwin/eval_robotwin_single.py
+--- a/experiments/robotwin/eval_robotwin_single.py
++++ b/experiments/robotwin/eval_robotwin_single.py
+@@ -131,12 +131,16 @@ def _ensure_policy_symlink(robotwin_root: Path, policy_source_dir: Path) -> Path:
+ 
+ 
+ def _format_override_value(value: Any) -> str:
++    if OmegaConf.is_config(value):
++        value = OmegaConf.to_container(value, resolve=True)
+     if isinstance(value, bool):
+         return "True" if value else "False"
+     if value is None:
+         return "None"
+     if isinstance(value, (int, float)):
+         return str(value)
++    if isinstance(value, (dict, list)):
++        return repr(value)
+     return repr(str(value))
+ 
+ 
+@@ -226,6 +230,33 @@ def main(cfg: DictConfig):
+         "skip_get_obs_within_replan",
+         cfg.EVALUATION.skip_get_obs_within_replan,
+     )
++    wamart_output_path = cfg.EVALUATION.wamart_output_path
++    if wamart_output_path is None:
++        wamart_output_path = robotwin_eval_base / "wamart.json"
++    _append_override(overrides, "wamart_mode", cfg.EVALUATION.wamart_mode)
++    _append_override(
++        overrides,
++        "wamart_reference_path",
++        cfg.EVALUATION.wamart_reference_path,
++    )
++    _append_override(overrides, "wamart_output_path", str(wamart_output_path))
++    _append_override(overrides, "wamart_k", cfg.EVALUATION.wamart_k)
++    _append_override(
++        overrides,
++        "wamart_target_anomaly_rate",
++        cfg.EVALUATION.wamart_target_anomaly_rate,
++    )
++    _append_override(overrides, "wamart_corruption", cfg.EVALUATION.wamart_corruption)
++    _append_override(
++        overrides,
++        "wamart_corruption_kwargs",
++        cfg.EVALUATION.wamart_corruption_kwargs,
++    )
++    _append_override(
++        overrides,
++        "wamart_corruption_seed",
++        cfg.EVALUATION.wamart_corruption_seed,
++    )
+ 
+     cmd = [
+         sys.executable,
+diff --git a/experiments/robotwin/fastwam_policy/deploy_policy.py b/experiments/robotwin/fastwam_policy/deploy_policy.py
+--- a/experiments/robotwin/fastwam_policy/deploy_policy.py
++++ b/experiments/robotwin/fastwam_policy/deploy_policy.py
+@@ -26,6 +26,7 @@
+ from fastwam.datasets.lerobot.processors.fastwam_processor import FastWAMProcessor
+ from fastwam.datasets.lerobot.robot_video_dataset import DEFAULT_PROMPT
+ from fastwam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
++from wam_art.eval.robotwin import RobotTwinWAMARTSession
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -162,7 +164,7 @@ class WorldActionRobotWinPolicy:
+ 
+         self.model = instantiate(model_cfg_copy, model_dtype=model_dtype, device=device)
+         self.model.load_checkpoint(checkpoint_path)
+-        self.model = self.model.to(device).eval()
++        self.model = self.model.eval()
+ 
+         self.processor: FastWAMProcessor = instantiate(processor_cfg).eval()
+         dataset_stats = load_dataset_stats_from_json(str(dataset_stats_path))
+@@ -171,6 +173,7 @@ class WorldActionRobotWinPolicy:
+         self.num_inference_steps = int(num_inference_steps)
+         self.sigma_shift = sigma_shift
+         self.seed = seed
++        self.current_policy_seed = seed
+         self.text_cfg_scale = float(text_cfg_scale)
+         self.negative_prompt = str(negative_prompt)
+         self.rand_device = str(rand_device)
+@@ -178,6 +180,7 @@ class WorldActionRobotWinPolicy:
+         self.tiled = bool(tiled)
+         self.timing_enabled = bool(timing_enabled)
+         self._num_video_frames = int(num_video_frames)
++        self.wamart: RobotTwinWAMARTSession | None = None
+ 
+         self.pending_actions: deque[np.ndarray] = deque()
+         self.episode_count = 0
+@@ -225,12 +227,16 @@ class WorldActionRobotWinPolicy:
+         right = _resize_rgb(obs_data["right_camera"]["rgb"], (160, 128))
+         bottom = np.concatenate([left, right], axis=1)
+         image = np.concatenate([head, bottom], axis=0)  # [384, 320, 3]
++        if self.wamart is not None:
++            image = self.wamart.transform(image)
+ 
+         image_tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).to(
+             device=self.model.device,
+             dtype=self.model.torch_dtype,
+         )
+         image_tensor = image_tensor * (2.0 / 255.0) - 1.0
++        if self.wamart is not None:
++            self.wamart.observe(image_tensor)
+         return image_tensor
+ 
+     def _infer_action_chunk(self, observation: Dict[str, Any], instruction: str) -> np.ndarray:
+@@ -248,7 +254,7 @@ class WorldActionRobotWinPolicy:
+             "text_cfg_scale": self.text_cfg_scale,
+             "num_inference_steps": self.num_inference_steps,
+             "sigma_shift": self.sigma_shift,
+-            "seed": self.seed,
++            "seed": self.current_policy_seed,
+             "rand_device": self.rand_device,
+             "tiled": self.tiled,
+         }
+@@ -307,6 +313,12 @@ class WorldActionRobotWinPolicy:
+         self.step_count = 0
+         self.reset_timing_rollout()
+ 
++    def start_episode(self, environment_seed: int) -> None:
++        del environment_seed
++        self.current_policy_seed = (
++            None if self.seed is None else self.seed + self.episode_count - 1
++        )
++
+ 
+ def encode_obs(observation: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+     return observation
+@@ -388,6 +394,39 @@ def get_model(usr_args: Dict[str, Any]):
+         timing_enabled=timing_enabled,
+         num_video_frames=(int(cfg.data.train.num_frames) - 1) // int(cfg.data.train.action_video_freq_ratio) + 1,
+     )
++    wamart_mode = usr_args.get("wamart_mode")
++    if not _is_none_like(wamart_mode):
++        reference_path = usr_args.get("wamart_reference_path")
++        output_path = usr_args.get("wamart_output_path")
++        task_name = usr_args.get("task_name")
++        if _is_none_like(reference_path):
++            raise ValueError("`wamart_reference_path` is required when WAM-ART is enabled")
++        if _is_none_like(output_path):
++            raise ValueError("`wamart_output_path` is required when WAM-ART is enabled")
++        if _is_none_like(task_name):
++            raise ValueError("`task_name` is required when WAM-ART is enabled")
++        corruption = usr_args.get("wamart_corruption")
++        if _is_none_like(corruption):
++            corruption = None
++        corruption_kwargs = usr_args.get("wamart_corruption_kwargs") or {}
++        if not isinstance(corruption_kwargs, dict):
++            raise TypeError("`wamart_corruption_kwargs` must be a mapping")
++        policy.wamart = RobotTwinWAMARTSession(
++            policy.model,
++            mode=str(wamart_mode),
++            checkpoint_path=str(checkpoint_path),
++            task_name=str(task_name),
++            output_path=str(output_path),
++            reference_path=str(reference_path),
++            corruption=corruption,
++            corruption_kwargs=corruption_kwargs,
++            policy_seed=seed,
++            corruption_seed=int(usr_args.get("wamart_corruption_seed", 0)),
++            k=int(usr_args.get("wamart_k", 5)),
++            target_anomaly_rate=float(
++                usr_args.get("wamart_target_anomaly_rate", 0.05)
++            ),
++        )
+     return policy
+ 
+ 
+@@ -398,3 +437,11 @@ def eval(TASK_ENV, model, observation: Optional[Dict[str, Any]]):
+ 
+ def reset_model(model):
+     model.reset()
++
++
++def start_episode(model, environment_seed: int):
++    model.start_episode(environment_seed)
++
++
++def finish_episode(model, measured_success: bool, environment_seed: int):
++    if model.wamart is not None:
++        model.wamart.end_episode(
++            measured_success,
++            environment_seed=environment_seed,
++            policy_seed=model.current_policy_seed,
++        )
+diff --git a/experiments/robotwin/fastwam_policy/deploy_policy.yml b/experiments/robotwin/fastwam_policy/deploy_policy.yml
+--- a/experiments/robotwin/fastwam_policy/deploy_policy.yml
++++ b/experiments/robotwin/fastwam_policy/deploy_policy.yml
+@@ -24,3 +24,13 @@ rand_device: cpu
+ tiled: false
+ timing_enabled: false
+ skip_get_obs_within_replan: false
++
++# WAM-ART connected evaluation
++wamart_mode: null
++wamart_reference_path: null
++wamart_output_path: null
++wamart_k: 5
++wamart_target_anomaly_rate: 0.05
++wamart_corruption: null
++wamart_corruption_kwargs: {}
++wamart_corruption_seed: 0
+diff --git a/third_party/RoboTwin/script/eval_policy.py b/third_party/RoboTwin/script/eval_policy.py
+--- a/third_party/RoboTwin/script/eval_policy.py
++++ b/third_party/RoboTwin/script/eval_policy.py
+@@ -256,6 +256,9 @@ def eval_policy(task_name,
+     policy_name = args["policy_name"]
+     eval_func = eval_function_decorator(policy_name, "eval")
+     reset_func = eval_function_decorator(policy_name, "reset_model")
++    policy_module = importlib.import_module(policy_name)
++    start_func = getattr(policy_module, "start_episode", None)
++    finish_func = getattr(policy_module, "finish_episode", None)
+ 
+     now_seed = st_seed
+     task_total_reward = 0
+@@ -362,6 +365,8 @@ def eval_policy(task_name,
+ 
+         succ = False
+         reset_func(model)
++        if start_func is not None:
++            start_func(model, now_seed)
+         while TASK_ENV.take_action_cnt < TASK_ENV.step_lim:
+             need_obs = True
+             if skip_get_obs_within_replan and hasattr(model, "should_request_observation"):
+@@ -393,6 +395,9 @@ def eval_policy(task_name,
+         else:
+             print("\033[91mFail!\033[0m")
+ 
++        if finish_func is not None:
++            finish_func(model, succ, now_seed)
++
+         now_id += 1
+         TASK_ENV.close_env(clear_cache=((succ_seed + 1) % clear_cache_freq == 0))
+ 
