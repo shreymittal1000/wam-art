@@ -37,6 +37,7 @@ class EpisodePrediction:
     anomaly_rate: float | None
     mean_anomaly_score: float | None
     max_anomaly_score: float | None
+    metadata: dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -100,7 +101,7 @@ class OnlineWAMARTScorer:
         self.k = k
         self.target_anomaly_rate = target_anomaly_rate
         self._current_latents: list[np.ndarray] = []
-        self._episodes: list[tuple[bool, list[np.ndarray]]] = []
+        self._episodes: list[tuple[bool, list[np.ndarray], dict[str, object]]] = []
         self._reference: np.ndarray | None = None
         self._threshold: float | None = None
 
@@ -135,11 +136,18 @@ class OnlineWAMARTScorer:
         latent = latent / norm
         self._current_latents.append(latent.numpy())
 
-    def end_episode(self, measured_success: bool) -> None:
+    def end_episode(
+        self,
+        measured_success: bool,
+        *,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
         """Attach the simulator label to observations from the current episode."""
         if not self._current_latents:
             raise RuntimeError("end_episode called before any policy observations")
-        self._episodes.append((bool(measured_success), self._current_latents))
+        self._episodes.append(
+            (bool(measured_success), self._current_latents, dict(metadata or {}))
+        )
         self._current_latents = []
 
     def save_reference(self, path: str | Path) -> Path:
@@ -149,7 +157,9 @@ class OnlineWAMARTScorer:
         if self._current_latents:
             raise RuntimeError("cannot save reference with an unfinished episode")
 
-        successful = [z for success, episode in self._episodes if success for z in episode]
+        successful = [
+            z for success, episode, _metadata in self._episodes if success for z in episode
+        ]
         if len(successful) < 4:
             raise RuntimeError(
                 "at least four observations from successful clean episodes are required"
@@ -177,16 +187,27 @@ class OnlineWAMARTScorer:
         self._threshold = threshold
         return output
 
+    @property
+    def successful_observation_count(self) -> int:
+        """Number of completed observations eligible for a clean reference."""
+        return sum(
+            len(episode)
+            for success, episode, _metadata in self._episodes
+            if success
+        )
+
     def episode_predictions(self) -> list[EpisodePrediction]:
         """Return episode-level anomaly predictions paired with real labels."""
         if self._current_latents:
             raise RuntimeError("cannot report with an unfinished episode")
 
         predictions: list[EpisodePrediction] = []
-        for idx, (success, episode) in enumerate(self._episodes):
+        for idx, (success, episode, metadata) in enumerate(self._episodes):
             if self.mode == "collect":
                 predictions.append(
-                    EpisodePrediction(idx, success, len(episode), None, None, None, None)
+                    EpisodePrediction(
+                        idx, success, len(episode), None, None, None, None, metadata
+                    )
                 )
                 continue
 
@@ -204,6 +225,7 @@ class OnlineWAMARTScorer:
                     anomaly_rate=anomaly_rate,
                     mean_anomaly_score=float(np.mean(scores)),
                     max_anomaly_score=float(np.max(scores)),
+                    metadata=metadata,
                 )
             )
         return predictions
@@ -223,7 +245,7 @@ class OnlineWAMARTScorer:
             raise RuntimeError("cannot build a report without completed episodes")
         successes = sum(int(ep.measured_success) for ep in episodes)
         return OnlineRunReport(
-            schema_version=1,
+            schema_version=2,
             mode=self.mode,
             model_name=model_name,
             task_suite=task_suite,

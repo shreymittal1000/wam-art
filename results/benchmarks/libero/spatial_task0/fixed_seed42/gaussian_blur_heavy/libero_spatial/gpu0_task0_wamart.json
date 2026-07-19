@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "mode": "score",
+  "model_name": "fastwam-libero_uncond_2cam224",
+  "task_suite": "libero_spatial",
+  "task_id": 0,
+  "task_description": "pick up the black bowl between the plate and the ramekin and place it on the plate",
+  "corruption": "gaussian_blur",
+  "corruption_kwargs": {
+    "kernel_size": 11,
+    "sigma": 3.0
+  },
+  "reference_path": "results/benchmarks/libero/spatial_task0/fixed_seed42/reference/libero_spatial_task0.npz",
+  "threshold": 0.3220535218715668,
+  "k": 5,
+  "target_anomaly_rate": 0.05,
+  "successes": 3,
+  "total_episodes": 3,
+  "measured_success_rate": 1.0,
+  "episodes": [
+    {
+      "episode_idx": 0,
+      "measured_success": true,
+      "n_observations": 9,
+      "predicted_success_rate": 0.0,
+      "anomaly_rate": 1.0,
+      "mean_anomaly_score": 0.4150733947753906,
+      "max_anomaly_score": 0.4468953609466553
+    },
+    {
+      "episode_idx": 1,
+      "measured_success": true,
+      "n_observations": 9,
+      "predicted_success_rate": 0.0,
+      "anomaly_rate": 1.0,
+      "mean_anomaly_score": 0.4140843152999878,
+      "max_anomaly_score": 0.45541858673095703
+    },
+    {
+      "episode_idx": 2,
+      "measured_success": true,
+      "n_observations": 10,
+      "predicted_success_rate": 0.0,
+      "anomaly_rate": 1.0,
+      "mean_anomaly_score": 0.4384397566318512,
+      "max_anomaly_score": 0.46095752716064453
+    }
+  ]
+}
