@@ -1,0 +1,17 @@
+{
+    "task_suite": "libero_spatial",
+    "task_id": 0,
+    "task_description": "pick up the black bowl between the plate and the ramekin and place it on the plate",
+    "successes": 0,
+    "total_episodes": 3,
+    "gpu_id": 0,
+    "success_episodes": [],
+    "failure_episodes": [
+        0,
+        1,
+        2
+    ],
+    "start_time": "2026-07-18 21:11:04",
+    "duration": 170.0644063949585,
+    "wamart_report": "/home/ubuntu/wam-art/results/connected_e2e_3464d95/noise_heavy/libero_spatial/gpu0_task0_wamart.json"
+}
